@@ -19,6 +19,13 @@ void game_init(void);
 // JOY_MID, JOY_SET and JOY_RESET from input.h.
 void game_update(uint8_t held, uint8_t pressed);
 
+// The frame is cut into GAME_TILE_W-wide tiles. For each strip (rows s * GAME_STRIP_ROWS
+// and on), the returned array holds a bitmask of the tiles that may differ from the last
+// frame drawn: bit t is columns t * GAME_TILE_W and on. Tiles with the bit clear are not
+// checked or sent. Call it once per frame, after game_update().
+#define GAME_TILE_W 16
+const uint32_t *game_dirty_tiles(void);
+
 // Draws rows y0 to y0 + rows - 1 of the frame into buf: rows * GAME_W RGB565 pixels,
 // row by row. Anything outside those rows is clipped away, so the game draws every
 // strip in turn with the same code.

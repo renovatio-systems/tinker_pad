@@ -1,4 +1,4 @@
-add_executable(blank_canvas main.c game.c input.c)
+add_executable(blank_canvas main.c game.c input.c jatayu_img.c assets.c)
 
 target_include_directories(blank_canvas PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(blank_canvas PRIVATE ili9488 font5x7 pico_stdlib)

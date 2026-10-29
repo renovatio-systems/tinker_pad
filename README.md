@@ -1,3 +1,66 @@
+# Agent Jatayu: Level 1
+
+A Ramayana arcade game for the 480 x 320 ILI9488 display on the RP2040 USB stick. Jatayu
+fights three Rakshasas with his magical golden claws. The title picture and the hero sprite
+come from `jatayu.png`.
+
+## Controls
+
+| Control | Action |
+|---|---|
+| Joystick | Fly in 8 directions (two directions at once) |
+| MID | Magical claw. Left and right swings alternate; a third quick swing is the double-claw X slash (2 damage) |
+| SET | Divine claw burst: golden shockwave, 2 damage to every enemy in range, costs 40 divine energy. On the title and end screens, SET starts or restarts the level |
+| Double-tap a direction | Dash, with brief invulnerability |
+| RST | Back to the title |
+
+## Level 1
+
+Wave 1 sends three Rakshasas down from the top: the **Blood Warrior** (2 hits, dives at
+you), the **Shadow Spearman** (3 hits, zigzags and throws dark orbs) and the **Demon
+Commander** (5 hits, charges after a glowing wind-up). When they are all down, **wave 2**
+brings four more (two Blood Warriors, a Shadow Spearman and a Demon Commander), each with one
+extra hit point. Defeat all seven to win. Jatayu has 200 health; if it reaches 0 it is game
+over, and SET tries again.
+
+## Score
+
+Each kill scores points (Blood Warrior 100, Shadow Spearman 200, Demon Commander 500).
+When the level is won the final score adds three bonuses:
+
+| Bonus | How it is worked out |
+|---|---|
+| Time | 15 points for every second under 100 seconds of fighting |
+| Attacks | 15 points for every attack under 80 (claw swings and bursts both count) |
+| Health | 10 points for every health point left |
+
+The numbers are `TIME_PAR_S`, `TIME_PTS`, `ATTACK_PAR`, `ATTACK_PTS` and `HEALTH_PTS` at the top
+of `src/game.c`.
+
+## Artwork
+
+`src/assets.c` and `src/assets.h` are generated. To rebuild them from `jatayu.png`:
+
+```sh
+python3 -I tools/gen_assets.py path/to/jatayu.png [preview.png]
+```
+
+Needs Python with Pillow, NumPy and SciPy.
+
+## Display speed
+
+The panel is slow, so the game tells the display code which 16-pixel tiles changed each
+frame (`game_dirty_tiles()`), and only those are sent. That is why the background doesn't
+scroll and the screen doesn't shake. Set `FPS_REPORT` to 1 in `src/main.c` to print the frame
+rate over USB serial.
+
+Flashing: if the firmware is running, the stick reboots into flash mode when its USB serial
+port is opened at 1200 baud (it may take a few tries). Otherwise hold **BOOT** while plugging in.
+
+---
+
+# Original starter kit notes
+
 # Blank canvas
 
 A starter kit for a 3.5" ILI9488 display (480 × 320, landscape) on an RP2040 USB stick,
