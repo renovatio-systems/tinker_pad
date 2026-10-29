@@ -1,7 +1,7 @@
 add_executable(blank_canvas main.c game.c input.c)
 
 target_include_directories(blank_canvas PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(blank_canvas PRIVATE st7789 font5x7 pico_stdlib)
+target_link_libraries(blank_canvas PRIVATE ili9488 font5x7 pico_stdlib)
 target_compile_options(blank_canvas PRIVATE -Wall)
 
 pico_set_program_name(blank_canvas "blank_canvas")

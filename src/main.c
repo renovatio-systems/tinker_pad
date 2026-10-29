@@ -1,77 +1,92 @@
-// Blank canvas: each tick, game.c updates from the buttons and draws a frame,
-// which is sent to the panel.
+// Blank canvas: each tick, game.c updates from the buttons and draws the frame in
+// strips. Only the strips that changed are packed and sent to the panel.
 //
 // Hold MID while powering on to show the display diagnostic instead of the game.
 // Use it to check the wiring and the panel settings in config.h.
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "config.h"
 #include "game.h"
+#include "ili9488.h"
 #include "input.h"
 #include "pico/stdlib.h"
-#include "st7789.h"
 
-// Double-buffered: the game draws one frame while DMA sends the other.
-static uint16_t frames[2][GAME_W * GAME_H];
+#define STRIPS (GAME_H / GAME_STRIP_ROWS)
+#define STRIP_PIXELS (GAME_W * GAME_STRIP_ROWS)
 
-static st7789_config_t display_config(void) {
-    return (st7789_config_t){
+static uint16_t strip_rgb[STRIP_PIXELS];                 // the strip being drawn
+static uint8_t packed[2][STRIP_PIXELS * ILI9488_BYTES_PER_PIXEL]; // two buffers for DMA
+static uint32_t strip_sum[STRIPS];                       // checksum of each strip last sent
+
+static ili9488_config_t display_config(void) {
+    return (ili9488_config_t){
         .spi = TFT_SPI,
         .pin_sck = PIN_SCK,
         .pin_mosi = PIN_MOSI,
+        .pin_miso = PIN_MISO,
         .pin_cs = PIN_CS,
         .pin_dc = PIN_DC,
         .pin_rst = PIN_RST,
         .pin_bl = PIN_BL,
         .baud = SPI_BAUD,
-        .x_off = ST7789_X_OFFSET,
-        .y_off = ST7789_Y_OFFSET,
-        .madctl = ST7789_MADCTL,
-        .invert = ST7789_INVERT,
     };
 }
 
-// Red, green and blue bands top to bottom, with a white border, so orientation
-// and colour order can be checked at a glance.
-static void diag_pattern(uint16_t *fb) {
-    const uint16_t bands[3] = {RGB565(255, 0, 0), RGB565(0, 255, 0), RGB565(0, 0, 255)};
-    const int band_h = GAME_H / 3;
-    for (int y = 0; y < GAME_H; y++) {
-        uint16_t c = bands[y < band_h ? 0 : y < 2 * band_h ? 1 : 2];
-        for (int x = 0; x < GAME_W; x++) fb[y * GAME_W + x] = c;
-    }
-    for (int x = 0; x < GAME_W; x++) {
-        fb[x] = RGB565(255, 255, 255);
-        fb[(GAME_H - 1) * GAME_W + x] = RGB565(255, 255, 255);
-    }
-    for (int y = 0; y < GAME_H; y++) {
-        fb[y * GAME_W] = RGB565(255, 255, 255);
-        fb[y * GAME_W + GAME_W - 1] = RGB565(255, 255, 255);
+// FNV-1a over a strip's pixels: a cheap change detector, so unchanged strips aren't sent.
+static uint32_t checksum(const uint16_t *p, int n) {
+    const uint8_t *b = (const uint8_t *)p;
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < n * 2; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+// Draws the whole frame strip by strip. A strip is sent only if its checksum changed
+// since the last frame, or if it's the first frame.
+static void draw_frame(bool first) {
+    int cur = 0;
+    for (int s = 0; s < STRIPS; s++) {
+        int y0 = s * GAME_STRIP_ROWS;
+        game_draw(strip_rgb, y0, GAME_STRIP_ROWS);
+
+        uint32_t sum = checksum(strip_rgb, STRIP_PIXELS);
+        if (!first && sum == strip_sum[s]) continue;
+        strip_sum[s] = sum;
+
+        // Pack into the buffer the previous DMA transfer is not reading.
+        for (int i = 0; i < STRIP_PIXELS; i++)
+            ili9488_pack(strip_rgb[i], &packed[cur][i * ILI9488_BYTES_PER_PIXEL]);
+        ili9488_blit_dma(0, y0, GAME_W, GAME_STRIP_ROWS, packed[cur]);
+        cur ^= 1;
     }
 }
 
-// Alternates the pattern with solid red, green, blue, white and black. Runs until reset.
+// Solid-colour bands, a white border and the colour sequence, to check the wiring,
+// orientation and colour order. Runs until reset.
 static void diagnostic(void) {
-    uint16_t *const fb = frames[0];
     const uint16_t solids[5] = {
         RGB565(255, 0, 0), RGB565(0, 255, 0), RGB565(0, 0, 255), RGB565(255, 255, 255), 0,
     };
     for (unsigned i = 0;; i = (i + 1) % 5) {
-        diag_pattern(fb);
-        st7789_send_frame(fb);
+        ili9488_fill_rect(0, 0, GAME_W, GAME_H / 3, RGB565(255, 0, 0));
+        ili9488_fill_rect(0, GAME_H / 3, GAME_W, GAME_H / 3, RGB565(0, 255, 0));
+        ili9488_fill_rect(0, 2 * GAME_H / 3, GAME_W, GAME_H - 2 * GAME_H / 3, RGB565(0, 0, 255));
+        ili9488_fill_rect(0, 0, GAME_W, 2, RGB565(255, 255, 255));
+        ili9488_fill_rect(0, GAME_H - 2, GAME_W, 2, RGB565(255, 255, 255));
+        ili9488_fill_rect(0, 0, 2, GAME_H, RGB565(255, 255, 255));
+        ili9488_fill_rect(GAME_W - 2, 0, 2, GAME_H, RGB565(255, 255, 255));
         sleep_ms(1500);
 
-        for (int p = 0; p < GAME_W * GAME_H; p++) fb[p] = solids[i];
-        st7789_send_frame(fb);
+        ili9488_fill_rect(0, 0, GAME_W, GAME_H, solids[i]);
         sleep_ms(1500);
     }
 }
 
 int main(void) {
     input_init();
-    st7789_config_t cfg = display_config();
-    st7789_init(&cfg);
+    ili9488_config_t cfg = display_config();
+    ili9488_init(&cfg);
 
     // Debounce needs the level to hold for a few ms, so sample MID twice.
     input_poll(0);
@@ -80,11 +95,11 @@ int main(void) {
     if (input_held() & JOY_MID) diagnostic();
 
     game_init();
+    draw_frame(true);
 
     // Fixed timestep on an absolute grid. After a long stall the grid is re-anchored.
     const uint64_t tick_us = 1000000 / GAME_TICK_HZ;
     uint64_t next_tick = time_us_64();
-    int cur = 0;
     while (true) {
         uint64_t now = time_us_64();
         input_poll((uint32_t)(now / 1000));
@@ -93,12 +108,7 @@ int main(void) {
             game_update(input_held(), input_pressed());
             next_tick += tick_us;
             if (now >= next_tick) next_tick = now + tick_us;
-
-            // Draw into the buffer DMA is not reading, then send it. The send waits
-            // for the previous frame to finish, so the buffers never overlap.
-            game_draw(frames[cur]);
-            st7789_send_frame(frames[cur]);
-            cur ^= 1;
+            draw_frame(false);
         }
     }
 }

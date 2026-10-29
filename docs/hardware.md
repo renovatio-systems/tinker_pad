@@ -4,7 +4,7 @@
 
 | Part | Details |
 |---|---|
-| Display | 2.25" SPI TFT, **ST7789**, **76 × 284** portrait, RGB565, 3.3 V logic |
+| Display | 3.5" SPI TFT, **ILI9488**, **480 × 320** landscape, 18-bit colour over SPI, 3.3 V logic |
 | MCU board | Generic **"RP2040 USB" stick**: RP2040-B2, 12 MHz crystal, W25Q32JV 4 MB QSPI flash, USB-A plug, BOOT and RST buttons |
 
 ![RP2040 USB stick](images/rp2040_board.jpg)
@@ -21,28 +21,29 @@
 | Not broken out | GP16 – GP19 |
 
 GP16–GP19 (the Pico's usual SPI0 pins) are missing, so the display uses SPI0's
-alternate pins GP2 (SCK) and GP3 (TX/MOSI), both on the GP0–GP8 edge.
+alternate pins GP2 (SCK), GP3 (TX/MOSI) and GP4 (RX/MISO), all on the GP0–GP8 edge.
 
 ## Display module
 
-The module has 8 signal pins: BL, CS, DC, RST, SDA, SCL, VCC and GND. There is
-no MISO, so the firmware only writes to the panel and never reads from it.
+The 3.5" module (the MSP3520 user manual is in the shell-shock branch's `docs/datasheets/`)
+has the signal pins below. Check the labels on your module against this table.
 
 | Module pin | Signal | RP2040 USB stick |
 |---|---|---|
-| VCC | Supply | `3V3` |
-| GND | Ground | `GND` |
+| VCC | Supply | 3V3 |
+| GND | Ground | GND |
 | CS | Chip select, active low | GP5 |
 | RST | Reset, active low | GP7 |
-| DC | Data (high) / command (low) | GP6 |
-| SDA | SPI MOSI | GP3 (SPI0 TX) |
-| SCL | SPI clock | GP2 (SPI0 SCK) |
-| BL | Backlight (active low on this module) | GND, backlight always on |
+| DC (or RS) | Data (high) / command (low) | GP6 |
+| SDI (MOSI) | SPI data into the panel | GP3 |
+| SCK | SPI clock | GP2 |
+| SDO (MISO) | SPI data out (status reads only) | GP4 |
+| LED / BL | Backlight | GND for always on, or GP8 with `PIN_BL 8` |
 
-On this module BL must go to GND to light the backlight. Tying it to 3V3 leaves the panel dark. The firmware doesn't drive BL, so `PIN_BL` is `-1` in `src/config.h`.
+The module's touch pins and SD card header aren't used.
 
-Confirm VCC is 3.3 V before powering the module. The module's logic levels are
-3.3 V, which matches the RP2040.
+BL: on this module the backlight is on when BL is tied to 3V3. If your module lights
+only when BL is grounded, wire it to GND instead and keep `PIN_BL -1`.
 
 ## Joystick
 
@@ -58,24 +59,19 @@ Seven buttons, each switching its GPIO to GND (see [`src/config.h`](../src/confi
 | SET | GP0 |
 | RESET | GP1 |
 
-## Unverified on the real module
+## Settings to check on the panel
 
-These values come from the brief and typical ST7789 modules, not from this panel:
+The firmware uses these defaults from the ILI9488 driver. Run the diagnostic first
+(hold MID while powering on) to confirm them:
 
-- **Panel offsets** (`ST7789_X_OFFSET`, `ST7789_Y_OFFSET`). A 76 × 284 panel usually
-  sits at an offset inside the controller's 240 × 320 RAM, but the exact values need
-  checking on the panel. The diagnostic screen shows whether the image is shifted or cut off.
-- **Orientation and colour order** (`ST7789_MADCTL`). Mirrored or upside-down output
-  means changing the MADCTL value; swapped red and blue means toggling the BGR bit (0x08).
-- **Inversion** (`ST7789_INVERT`). IPS panels usually need it on.
-- **Porch, gate, VCOM and gamma values** in `lib/st7789/src/st7789.c`. These are the
-  common defaults and may need tuning for this module.
-- **SPI clock**: the firmware uses 31.25 MHz. Lower `SPI_BAUD` if the picture is noisy.
-
-Run the diagnostic screen first (hold MID while powering on) to check these.
+- **Orientation and colour order** (`ILI9488_MADCTL` in `lib/ili9488/include/ili9488.h`,
+  currently 0x28, landscape BGR). Mirrored or upside-down output: try 0xE8. Swapped red
+  and blue: clear the BGR bit (0x08).
+- **SPI clock** (`SPI_BAUD` in `src/config.h`, 15 MHz). Lower it if the picture is noisy.
+- **Frame rate.** A full frame is 460 KB, so the firmware sends only the strips that
+  changed. Fast-moving pictures will still update at a few frames a second.
 
 ## Power
 
-The RP2040 stick runs from USB. The display takes its supply from the 3V3 pin, so
-the total current is set by the RP2040 regulator and the backlight. Check the
-module's current draw before adding anything else to the 3V3 rail.
+The stick runs from USB. The display takes its supply from the 3V3 pin. Check the
+module's current draw, including the backlight, before adding anything else to the 3V3 rail.

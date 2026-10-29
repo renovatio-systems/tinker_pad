@@ -15,5 +15,5 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 add_subdirectory(lib/font5x7)
-add_subdirectory(lib/st7789)
+add_subdirectory(lib/ili9488)
 add_subdirectory(src)

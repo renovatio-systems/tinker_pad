@@ -10,14 +10,14 @@
 
 // Screen areas. The title sits at the top, the legend at the bottom, and the
 // playfield in between.
-#define TITLE_Y   6
-#define PLAY_TOP  30
-#define PLAY_BOTTOM 244
-#define LEGEND_Y1 256
-#define LEGEND_Y2 268
+#define TITLE_Y     20
+#define PLAY_TOP    82
+#define PLAY_BOTTOM 258
+#define LEGEND_Y1   272
+#define LEGEND_Y2   296
 
-#define BOX_SIZE  8
-#define BOX_SPEED 2 // pixels per tick
+#define BOX_SIZE  24
+#define BOX_SPEED 6 // pixels per tick
 
 static const uint16_t colours[] = {
     RGB565(255, 80, 80),  // red
@@ -38,22 +38,27 @@ static unsigned colour;
 static int paused;
 static uint8_t buttons; // buttons held down, kept for drawing the legend
 
-static void put(uint16_t *fb, int x, int y, uint16_t c) {
-    if (x >= 0 && x < GAME_W && y >= 0 && y < GAME_H) fb[y * GAME_W + x] = c;
+// The strip being drawn right now. put() ignores pixels outside it.
+static uint16_t *strip;
+static int strip_y0, strip_rows;
+
+static void put(int x, int y, uint16_t c) {
+    if (x >= 0 && x < GAME_W && y >= strip_y0 && y < strip_y0 + strip_rows)
+        strip[(y - strip_y0) * GAME_W + x] = c;
 }
 
-static void fill(uint16_t *fb, int x, int y, int w, int h, uint16_t c) {
+static void fill(int x, int y, int w, int h, uint16_t c) {
     for (int yy = y; yy < y + h; yy++)
-        for (int xx = x; xx < x + w; xx++) put(fb, xx, yy, c);
+        for (int xx = x; xx < x + w; xx++) put(xx, yy, c);
 }
 
 // Draws text in the 5x7 font, `scale` times bigger. Each character is 6 * scale wide.
-static void text(uint16_t *fb, int x, int y, const char *s, uint16_t c, int scale) {
+static void text(int x, int y, const char *s, uint16_t c, int scale) {
     for (; *s; s++, x += 6 * scale) {
         const uint8_t *cols = font5x7_glyph(*s);
         for (int gx = 0; gx < 5; gx++)
             for (int gy = 0; gy < 7; gy++)
-                if ((cols[gx] >> gy) & 1) fill(fb, x + gx * scale, y + gy * scale, scale, scale, c);
+                if ((cols[gx] >> gy) & 1) fill(x + gx * scale, y + gy * scale, scale, scale, c);
     }
 }
 
@@ -62,13 +67,13 @@ static int text_width(const char *s, int scale) {
     return n ? n * 6 * scale - scale : 0;
 }
 
-static void text_centred(uint16_t *fb, int y, const char *s, uint16_t c, int scale) {
-    text(fb, (GAME_W - text_width(s, scale)) / 2, y, s, c, scale);
+static void text_centred(int y, const char *s, uint16_t c, int scale) {
+    text((GAME_W - text_width(s, scale)) / 2, y, s, c, scale);
 }
 
-// Draws one legend label, lit up while its button is held.
-static void label(uint16_t *fb, int x, int y, const char *s, uint8_t bit) {
-    text(fb, x, y, s, (buttons & bit) ? COLOUR_TEXT : COLOUR_LABEL, 1);
+// Draws one legend label at x, lit up while its button is held.
+static void label(int x, int y, const char *s, uint8_t bit) {
+    text(x, y, s, (buttons & bit) ? COLOUR_TEXT : COLOUR_LABEL, 2);
 }
 
 void game_init(void) {
@@ -101,24 +106,27 @@ void game_update(uint8_t held, uint8_t pressed) {
     if (box_y > PLAY_BOTTOM - BOX_SIZE) box_y = PLAY_BOTTOM - BOX_SIZE;
 }
 
-void game_draw(uint16_t *fb) {
-    memset(fb, 0, GAME_W * GAME_H * sizeof *fb);
+void game_draw(uint16_t *buf, int y0, int rows) {
+    strip = buf;
+    strip_y0 = y0;
+    strip_rows = rows;
+    memset(buf, 0, (size_t)rows * GAME_W * sizeof *buf);
 
-    text_centred(fb, TITLE_Y, "HELLO", COLOUR_TEXT, 2);
+    text_centred(TITLE_Y, "HELLO", COLOUR_TEXT, 4);
 
-    fill(fb, 0, PLAY_TOP - 2, GAME_W, 1, COLOUR_RULE);
-    fill(fb, 0, PLAY_BOTTOM + 2, GAME_W, 1, COLOUR_RULE);
+    fill(0, PLAY_TOP - 4, GAME_W, 2, COLOUR_RULE);
+    fill(0, PLAY_BOTTOM + 2, GAME_W, 2, COLOUR_RULE);
 
-    fill(fb, box_x, box_y, BOX_SIZE, BOX_SIZE, colours[colour]);
+    fill(box_x, box_y, BOX_SIZE, BOX_SIZE, colours[colour]);
 
-    if (paused) text_centred(fb, 130, "PAUSED", COLOUR_TEXT, 1);
+    if (paused) text_centred(150, "PAUSED", COLOUR_TEXT, 3);
 
     // Button legend: each label lights up while its button is held.
-    label(fb, 5, LEGEND_Y1, "UP", JOY_UP);
-    label(fb, 23, LEGEND_Y1, "DN", JOY_DOWN);
-    label(fb, 41, LEGEND_Y1, "LT", JOY_LEFT);
-    label(fb, 59, LEGEND_Y1, "RT", JOY_RIGHT);
-    label(fb, 5, LEGEND_Y2, "MID", JOY_MID);
-    label(fb, 29, LEGEND_Y2, "SET", JOY_SET);
-    label(fb, 53, LEGEND_Y2, "RST", JOY_RESET);
+    label(40, LEGEND_Y1, "UP", JOY_UP);
+    label(160, LEGEND_Y1, "DN", JOY_DOWN);
+    label(280, LEGEND_Y1, "LT", JOY_LEFT);
+    label(400, LEGEND_Y1, "RT", JOY_RIGHT);
+    label(60, LEGEND_Y2, "MID", JOY_MID);
+    label(200, LEGEND_Y2, "SET", JOY_SET);
+    label(340, LEGEND_Y2, "RST", JOY_RESET);
 }
