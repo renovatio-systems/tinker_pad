@@ -11,7 +11,9 @@
 #include "game.h"
 #include "ili9488.h"
 #include "input.h"
+#include "led.h"
 #include "pico/stdlib.h"
+#include <stdio.h>
 
 #define STRIPS (GAME_H / GAME_STRIP_ROWS)
 #define STRIP_PIXELS (GAME_W * GAME_STRIP_ROWS)
@@ -84,6 +86,7 @@ static void diagnostic(void) {
 }
 
 int main(void) {
+    stdio_init_all(); // USB serial: needed for the 1200-baud reset into the bootloader
     input_init();
     ili9488_config_t cfg = display_config();
     ili9488_init(&cfg);
@@ -93,6 +96,18 @@ int main(void) {
     sleep_ms(30);
     input_poll(30);
     if (input_held() & JOY_MID) diagnostic();
+
+    // LED test: red, green, blue, white, then off. Only on boards with the LED.
+    if (PIN_LED >= 0) {
+        led_init(PIN_LED);
+        const uint8_t led_test[4][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255}};
+        for (int i = 0; i < 4; i++) {
+            led_set(led_test[i][0], led_test[i][1], led_test[i][2]);
+            sleep_ms(500);
+        }
+        led_set(0, 0, 0);
+        printf("LED test done on GP%d\n", PIN_LED);
+    }
 
     game_init();
     draw_frame(true);
