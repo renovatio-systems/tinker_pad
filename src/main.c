@@ -12,6 +12,7 @@
 #include "game.h"
 #include "ili9488.h"
 #include "input.h"
+#include "led.h"
 #include "pico/stdlib.h"
 
 #define STRIPS (GAME_H / GAME_STRIP_ROWS)
@@ -123,6 +124,10 @@ int main(void) {
     input_init();
     ili9488_config_t cfg = display_config();
     ili9488_init(&cfg);
+    if (PIN_LED >= 0) {
+        led_init(PIN_LED);
+        led_set(0, 0, 0); // off until the game uses it
+    }
 
     // Debounce needs the level to hold for a few ms, so sample MID twice.
     input_poll(0);

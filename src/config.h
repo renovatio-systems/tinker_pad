@@ -13,6 +13,13 @@
 #define PIN_RST  7  // display RESET
 #define PIN_BL   -1 // display LED tied to 3V3; set to 8 to switch it from GP8
 
+// RGB LED (WS2812B-0807) on the RP2350 USB board. The RP2040 stick has none, so -1.
+#if PICO_RP2350
+#define PIN_LED 22
+#else
+#define PIN_LED -1
+#endif
+
 // Joystick buttons: each switches its GPIO to GND (internal pull-ups are used).
 #define PIN_JOY_UP    26
 #define PIN_JOY_DOWN  27

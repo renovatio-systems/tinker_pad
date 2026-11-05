@@ -1,7 +1,9 @@
-add_executable(blank_canvas main.c game.c input.c jatayu_img.c assets.c)
+add_executable(blank_canvas main.c game.c input.c led.c jatayu_img.c assets.c)
+
+pico_generate_pio_header(blank_canvas ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 
 target_include_directories(blank_canvas PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(blank_canvas PRIVATE ili9488 font5x7 pico_stdlib)
+target_link_libraries(blank_canvas PRIVATE ili9488 font5x7 pico_stdlib hardware_pio)
 target_compile_options(blank_canvas PRIVATE -Wall)
 
 pico_set_program_name(blank_canvas "blank_canvas")
