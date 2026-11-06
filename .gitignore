@@ -16,3 +16,8 @@ build-*/
 .idea/
 *.swp
 .DS_Store
+
+# Only the README and the hardware notes are kept as Markdown in the repo
+*.md
+!README.md
+!docs/hardware.md
