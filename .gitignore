@@ -21,3 +21,11 @@ build-*/
 *.md
 !README.md
 !docs/hardware.md
+
+# Local clutter: zip bundles, build folders from the quick test builds, Python caches
+*.zip
+/b2040/
+/b2350/
+/b*.log
+__pycache__/
+assets/level3/sheet.png
