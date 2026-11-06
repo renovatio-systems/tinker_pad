@@ -1665,80 +1665,113 @@ static void l2_dirty(void) {
 }
 
 
-// ---- Level 3, Stage 3A: Temple Ascent ----------------------------------------------------
-// A vertical platformer. Jatayu climbs the temple to the Pushpaka Vimana.
-//   LEFT / RIGHT  walk          UP  jump          MID  light the nearest diya (a checkpoint)
+// ---- Level 3: the pursuit of Ravana (Stages 3A, 3B, 3C) ----------------------------------
+// A vertical platformer. Jatayu climbs each temple, cloud and blood-moon stage to the Pushpaka
+// Vimana. Each stage ends with a chariot escape, and the next stage starts after it.
+//   LEFT / RIGHT  walk        UP  jump        MID  light the nearest diya (a checkpoint)
 //   SET           start, and on the last screen, back to the title
 // Physics is fixed point: y and vy are in 1/16 pixel units ("Q4").
 
-#define L3_WORLD_H    960
-#define L3_CAM_MAX    (L3_WORLD_H - GAME_H)
-#define L3_GRAV       6       // Q4 per tick, so 0.375 px per tick^2
-#define L3_JUMP       (-117)  // Q4 per tick, about 7.3 px per tick: a jump of about 72 px
-#define L3_SPEED      3
-#define L3_HALF       20      // Jatayu's hit box, half its width either side of his centre
-#define L3_HEIGHT     42      // and its height above his feet
-#define L3_REACH_X    50      // how close he must be, sideways, to light a diya
-#define L3_REACH_Y    60      // and above or below its platform
-#define L3_PLATS      23
-#define L3_GOAL       22      // the top platform, where the chariot waits
-#define L3_CP_MAX     3
+#define L3_WORLD_H      960
+#define L3_CAM_MAX      (L3_WORLD_H - GAME_H)
+#define L3_GRAV         6       // Q4 per tick, so 0.375 px per tick^2
+#define L3_JUMP         (-117)  // Q4 per tick, about 7.3 px per tick: a jump of about 72 px
+#define L3_SPEED        3
+#define L3_HALF         20      // Jatayu's hit box, half its width either side of his centre
+#define L3_HEIGHT       42      // and its height above his feet
+#define L3_REACH_X      50      // how close he must be, sideways, to light a diya
+#define L3_REACH_Y      60      // and above or below its platform
+#define L3_MAX_PLATS    24
+#define L3_STAGES       3
+#define L3_VANISH       40      // ticks a disappearing platform stays solid after he lands on it
+#define L3_GONE         60      // ticks it stays gone
+#define L3_INTRO_TICKS  90
+#define L3_ESCAPE_TICKS 120
 
 enum { L3_STORY, L3_INTRO, L3_PLAY, L3_ESCAPE, L3_DONE };
+enum { L3_STATIC, L3_MOVING, L3_VANISHING };
 
 typedef struct {
-    int x, y, w, moving, dir, min_x, max_x, dx; // y is the top of the platform
+    int x, y, w, type, dir, min_x, max_x, dx, speed, vanish_t, gone_t; // y is the top
 } L3Plat;
 
-// Stage 3A layout, from the courtyard (bottom) to the chariot (top).
-static const L3Plat l3_layout[L3_PLATS] = {
-    {0, 930, 480, 0, 1, 0, 0, 0},
-    {60, 892, 144, 0, 1, 0, 0, 0},
-    {300, 856, 96, 1, 1, 230, 380, 0},
-    {180, 818, 96, 0, 1, 0, 0, 0},
-    {330, 782, 96, 0, 1, 0, 0, 0},
-    {150, 744, 96, 1, 1, 60, 260, 0},
-    {230, 706, 96, 0, 1, 0, 0, 0},
-    {60, 668, 96, 0, 1, 0, 0, 0},
-    {250, 630, 144, 0, 1, 0, 0, 0},
-    {30, 592, 96, 1, 1, 20, 220, 0},
-    {300, 554, 96, 0, 1, 0, 0, 0},
-    {120, 516, 96, 0, 1, 0, 0, 0},
-    {320, 478, 96, 1, 1, 260, 384, 0},
-    {140, 440, 96, 0, 1, 0, 0, 0},
-    {30, 402, 96, 0, 1, 0, 0, 0},
-    {250, 364, 96, 0, 1, 0, 0, 0},
-    {120, 326, 96, 1, 1, 60, 300, 0},
-    {320, 288, 96, 0, 1, 0, 0, 0},
-    {150, 250, 96, 0, 1, 0, 0, 0},
-    {30, 212, 96, 0, 1, 0, 0, 0},
-    {250, 174, 96, 1, 1, 200, 380, 0},
-    {130, 136, 96, 0, 1, 0, 0, 0},
-    {260, 110, 144, 0, 1, 0, 0, 0}, // goal
+// Stage 3A, Temple Ascent: easy, wide platforms, moving ones, and the courtyard at the bottom.
+static const L3Plat l3_layout_a[23] = {
+    {0, 930, 480, 0, 1, 0, 0, 0, 0},
+    {60, 892, 144, 0, 1, 0, 0, 0, 0},
+    {300, 856, 96, 1, 1, 230, 380, 0, 0},
+    {180, 818, 96, 0, 1, 0, 0, 0, 0},
+    {330, 782, 96, 0, 1, 0, 0, 0, 0},
+    {150, 744, 96, 1, 1, 60, 260, 0, 0},
+    {230, 706, 96, 0, 1, 0, 0, 0, 0},
+    {60, 668, 96, 0, 1, 0, 0, 0, 0},
+    {250, 630, 144, 0, 1, 0, 0, 0, 0},
+    {30, 592, 96, 1, 1, 20, 220, 0, 0},
+    {300, 554, 96, 0, 1, 0, 0, 0, 0},
+    {120, 516, 96, 0, 1, 0, 0, 0, 0},
+    {320, 478, 96, 1, 1, 260, 384, 0, 0},
+    {140, 440, 96, 0, 1, 0, 0, 0, 0},
+    {30, 402, 96, 0, 1, 0, 0, 0, 0},
+    {250, 364, 96, 0, 1, 0, 0, 0, 0},
+    {120, 326, 96, 1, 1, 60, 300, 0, 0},
+    {320, 288, 96, 0, 1, 0, 0, 0, 0},
+    {150, 250, 96, 0, 1, 0, 0, 0, 0},
+    {30, 212, 96, 0, 1, 0, 0, 0, 0},
+    {250, 174, 96, 1, 1, 200, 380, 0, 0},
+    {130, 136, 96, 0, 1, 0, 0, 0, 0},
+    {260, 110, 144, 0, 1, 0, 0, 0, 0}, // the goal
 };
-// Platforms that carry a diya, in order. Each diya can be lit once.
-static const int l3_diya_plat[L3_CP_MAX] = {8, 11, 15};
 
-static L3Plat l3_plat[L3_PLATS];
-static int l3_state, l3_t;
+// Stage 3B, Celestial Sky: medium. Clouds, with disappearing platforms. Stage 3C reuses this
+// layout with more disappearing platforms and faster moving ones.
+static const L3Plat l3_layout_b[24] = {
+    {0, 930, 480, 0, 1, 0, 0, 0, 0},
+    {60, 892, 144, 0, 1, 0, 0, 0, 0},
+    {260, 856, 96, 2, 1, 0, 0, 0, 0},
+    {170, 818, 96, 0, 1, 0, 0, 0, 0},
+    {330, 782, 96, 1, 1, 250, 384, 0, 0},
+    {150, 744, 96, 2, 1, 0, 0, 0, 0},
+    {290, 706, 96, 0, 1, 0, 0, 0, 0},
+    {20, 668, 96, 1, 1, 20, 240, 0, 0},
+    {250, 630, 144, 0, 1, 0, 0, 0, 0},
+    {330, 592, 96, 2, 1, 0, 0, 0, 0},
+    {200, 554, 96, 0, 1, 0, 0, 0, 0},
+    {30, 516, 96, 1, 1, 20, 220, 0, 0},
+    {280, 478, 144, 0, 1, 0, 0, 0, 0},
+    {150, 440, 96, 2, 1, 0, 0, 0, 0},
+    {330, 402, 96, 1, 1, 260, 384, 0, 0},
+    {150, 364, 96, 0, 1, 0, 0, 0, 0},
+    {30, 326, 96, 2, 1, 0, 0, 0, 0},
+    {150, 288, 144, 0, 1, 0, 0, 0, 0},
+    {330, 250, 96, 1, 1, 260, 384, 0, 0},
+    {150, 212, 96, 2, 1, 0, 0, 0, 0},
+    {30, 174, 96, 0, 1, 0, 0, 0, 0},
+    {160, 136, 96, 1, 1, 160, 330, 0, 0},
+    {150, 96, 96, 0, 1, 0, 0, 0, 0},
+    {260, 80, 144, 0, 1, 0, 0, 0, 0}, // the goal
+};
+
+static const L3Plat *const l3_layouts[L3_STAGES] = {l3_layout_a, l3_layout_b, l3_layout_b};
+static const int l3_nplats[L3_STAGES] = {23, 24, 24};
+static const int l3_diya_plats[L3_STAGES][3] = {{8, 11, 15}, {8, 12, 17}, {8, 12, 17}};
+
+static L3Plat l3_plat[L3_MAX_PLATS];
+static int l3_nplat, l3_stage, l3_state, l3_t;
+static int l3_diya[3];   // the platform each diya stands on, this stage
+static int l3_lit[3];    // which diyas have been lit this stage
+static int l3_cp;        // the platform he respawns on
 static struct {
-    int x;          // centre, px
-    int y_q;        // feet, Q4
-    int vy_q;       // vertical speed, Q4 per tick
-    int on;         // platform he stands on, or -1 in the air
-    int facing;     // 1 right, -1 left
+    int x;     // centre, px
+    int y_q;   // feet, Q4
+    int vy_q;  // vertical speed, Q4 per tick
+    int on;    // the platform he stands on, or -1 in the air
+    int facing;
 } l3p;
-static int l3_lit[L3_CP_MAX];
-static int l3_cp;   // the platform he respawns on
-static int l3_cam;  // world y of the top of the screen
-static int l3_prev_cam;
-static int l3_chariot_y;
-static int l3_prev_lit = -1;
+static int l3_cam, l3_prev_cam, l3_chariot_y, l3_prev_lit = -1;
 
 static int l3_clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-
 static int l3_feet(void) { return l3p.y_q >> 4; }
-
+static int l3_lit_count(void) { return l3_lit[0] + l3_lit[1] + l3_lit[2]; }
 static int l3_over(const L3Plat *p) { return l3p.x - L3_HALF < p->x + p->w && l3p.x + L3_HALF > p->x; }
 
 static void l3_respawn(void) {
@@ -1750,15 +1783,29 @@ static void l3_respawn(void) {
     l3p.facing = 1;
 }
 
-static void l3_start(void) {
-    memcpy(l3_plat, l3_layout, sizeof l3_plat);
-    memset(l3_lit, 0, sizeof l3_lit);
+// Loads one stage's platforms and resets everything that belongs to a stage.
+static void l3_load_stage(int stage) {
+    l3_stage = stage;
+    l3_nplat = l3_nplats[stage];
+    for (int i = 0; i < l3_nplat; i++) {
+        l3_plat[i] = l3_layouts[stage][i];
+        L3Plat *p = &l3_plat[i];
+        p->speed = stage == 2 ? 2 : 1; // Stage 3C's moving platforms are faster
+        p->dx = 0;
+        p->vanish_t = p->gone_t = 0;
+        if (stage == 2 && i == 6) p->type = L3_VANISHING; // Stage 3C adds one more
+    }
+    for (int i = 0; i < 3; i++) {
+        l3_diya[i] = l3_diya_plats[stage][i];
+        l3_lit[i] = 0;
+    }
     l3_cp = 0;
     l3_chariot_y = 0;
     l3_respawn();
     l3_cam = l3_clamp(l3_feet() - 230, 0, L3_CAM_MAX);
     l3_prev_cam = l3_cam;
     l3_prev_lit = -1;
+    force_all = 1;
 }
 
 static void level3_start(void) {
@@ -1767,61 +1814,70 @@ static void level3_start(void) {
     l3_on = 1;
     l3_state = L3_STORY;
     l3_t = 0;
-    force_all = 1;
-    l3_start();
+    l3_load_stage(0);
 }
 
 static void l3_step(uint8_t held, uint8_t pressed) {
     l3_t++;
-    if (l3_state == L3_STORY) {
+    switch (l3_state) {
+    case L3_STORY:
         if (pressed & JOY_SET) {
             l3_state = L3_INTRO;
             l3_t = 0;
         }
         return;
-    }
-    if (l3_state == L3_INTRO) {
-        if (l3_t >= 90) {
+    case L3_INTRO:
+        if (l3_t >= L3_INTRO_TICKS) {
             l3_state = L3_PLAY;
             l3_t = 0;
         }
         return;
-    }
-    if (l3_state == L3_ESCAPE) {
+    case L3_ESCAPE:
         // The chariot climbs out of the top of the stage.
         l3_chariot_y -= 3;
-        if (l3_t >= 120) {
-            l3_state = L3_DONE;
+        if (l3_t >= L3_ESCAPE_TICKS) {
+            if (l3_stage < L3_STAGES - 1) {
+                l3_load_stage(l3_stage + 1);
+                l3_state = L3_INTRO;
+            } else {
+                l3_state = L3_DONE;
+            }
             l3_t = 0;
         }
         return;
-    }
-    if (l3_state == L3_DONE) {
+    case L3_DONE:
         if (l3_t >= 30 && (pressed & JOY_SET)) game_init();
         return;
     }
 
-    // 1. Platforms move between their two ends.
-    for (int i = 0; i < L3_PLATS; i++) {
+    // 1. Platforms move, and disappearing ones fade, vanish and come back.
+    for (int i = 0; i < l3_nplat; i++) {
         L3Plat *p = &l3_plat[i];
         p->dx = 0;
-        if (!p->moving) continue;
-        int old = p->x;
-        p->x += p->dir;
-        if (p->x <= p->min_x) {
-            p->x = p->min_x;
-            p->dir = 1;
-        } else if (p->x >= p->max_x) {
-            p->x = p->max_x;
-            p->dir = -1;
+        if (p->type == L3_MOVING) {
+            int old = p->x;
+            p->x += p->dir * p->speed;
+            if (p->x <= p->min_x) {
+                p->x = p->min_x;
+                p->dir = 1;
+            } else if (p->x >= p->max_x) {
+                p->x = p->max_x;
+                p->dir = -1;
+            }
+            p->dx = p->x - old;
+        } else if (p->type == L3_VANISHING) {
+            if (p->gone_t > 0) {
+                if (--p->gone_t == 0) p->vanish_t = 0; // back again
+            } else if (p->vanish_t > 0) {
+                if (--p->vanish_t == 0) p->gone_t = L3_GONE;
+            }
         }
-        p->dx = p->x - old;
     }
 
-    // 2. Standing on a moving platform carries Jatayu with it, or he steps off the end.
+    // 2. Standing on a platform carries him with it. He falls if he steps off or it's gone.
     if (l3p.on >= 0) {
         const L3Plat *p = &l3_plat[l3p.on];
-        if (!l3_over(p)) {
+        if (!l3_over(p) || p->gone_t > 0) {
             l3p.on = -1;
         } else {
             l3p.x += p->dx;
@@ -1844,14 +1900,14 @@ static void l3_step(uint8_t held, uint8_t pressed) {
         l3p.on = -1;
     }
 
-    // 4. Divine light: MID lights the nearest unlit diya within reach, and it becomes the checkpoint.
+    // 4. Divine light: MID lights the nearest unlit diya in reach. It becomes the checkpoint.
     if (pressed & JOY_MID) {
         int best = -1, best_d = 1 << 30;
-        for (int i = 0; i < L3_CP_MAX; i++) {
+        for (int i = 0; i < 3; i++) {
             if (l3_lit[i]) continue;
-            const L3Plat *p = &l3_plat[l3_diya_plat[i]];
+            const L3Plat *p = &l3_plat[l3_diya[i]];
             int dx = abs(l3p.x - (p->x + p->w / 2)), dy = abs(l3_feet() - p->y);
-            if (dx > L3_REACH_X || dy > L3_REACH_Y) continue; // too far from this diya
+            if (dx > L3_REACH_X || dy > L3_REACH_Y) continue;
             if (dx + dy < best_d) {
                 best_d = dx + dy;
                 best = i;
@@ -1859,36 +1915,42 @@ static void l3_step(uint8_t held, uint8_t pressed) {
         }
         if (best >= 0) {
             l3_lit[best] = 1;
-            l3_cp = l3_diya_plat[best];
+            l3_cp = l3_diya[best];
         }
     }
 
-    // 5. Gravity, and landing on a platform from above only.
+    // 5. Gravity, and landing on a platform from above only. Disappearing platforms start to
+    //    fade as soon as he lands on them.
     if (l3p.on < 0) {
         int prev = l3_feet();
         l3p.vy_q += L3_GRAV;
         l3p.y_q += l3p.vy_q;
         int feet = l3_feet();
         if (l3p.vy_q >= 0) {
-            for (int i = 0; i < L3_PLATS; i++) {
-                const L3Plat *p = &l3_plat[i];
+            for (int i = 0; i < l3_nplat; i++) {
+                L3Plat *p = &l3_plat[i];
                 // Any crossing of the platform top from above counts, however fast he falls.
-                if (prev <= p->y && feet >= p->y && l3_over(p)) {
+                if (p->gone_t == 0 && prev <= p->y && feet >= p->y && l3_over(p)) {
                     l3p.on = i;
                     l3p.y_q = p->y << 4;
                     l3p.vy_q = 0;
+                    if (p->type == L3_VANISHING && p->vanish_t == 0) p->vanish_t = L3_VANISH;
                     break;
                 }
             }
         }
     }
+    if (l3p.on >= 0 && l3_plat[l3p.on].type == L3_VANISHING && l3_plat[l3p.on].vanish_t == 0 &&
+        l3_plat[l3p.on].gone_t == 0)
+        l3_plat[l3p.on].vanish_t = L3_VANISH;
 
-    // 6. Reaching the goal starts the escape. Falling off the bottom sends him back to the checkpoint.
-    if (l3p.on == L3_GOAL) {
+    // 6. The top platform is the goal: reaching it starts the chariot escape.
+    if (l3p.on == l3_nplat - 1) {
         l3_state = L3_ESCAPE;
         l3_t = 0;
         return;
     }
+    // Falling off the bottom sends him back to his checkpoint.
     if (l3_feet() > l3_cam + GAME_H + 20) l3_respawn();
 
     // 7. The camera follows him up and down, and stays inside the stage.
@@ -1898,52 +1960,70 @@ static void l3_step(uint8_t held, uint8_t pressed) {
     l3_cam = l3_clamp(l3_cam, 0, L3_CAM_MAX);
 }
 
+// ---- Level 3 drawing -------------------------------------------------------------------
 
-// Stage 3A drawing. Every strip is drawn from scratch (sky, temple, platforms, diyas, chariot,
-// Jatayu, then the HUD and any message), so it works with the dirty-strip system.
-static void l3_sky(void) {
-    // Sunset: saffron at the top, orange and deep red towards the temple.
-    for (int y = strip_y0; y < strip_y0 + strip_rows; y++) {
-        int t = y * 5 / GAME_H;
-        static const uint16_t band[5] = {
-            RGB565(250, 190, 90), RGB565(250, 150, 60), RGB565(240, 110, 50),
-            RGB565(200, 70, 50), RGB565(120, 40, 50),
-        };
-        fill(0, y, GAME_W, 1, band[t]);
-    }
+static void l3_draw_sky(void) {
+    // Each stage has its own sky: sunset in 3A, light blue in 3B, and a blood red night in 3C.
+    static const uint16_t sunset[5] = {
+        RGB565(250, 190, 90), RGB565(250, 150, 60), RGB565(240, 110, 50), RGB565(200, 70, 50), RGB565(120, 40, 50),
+    };
+    static const uint16_t sky[5] = {
+        RGB565(150, 210, 250), RGB565(120, 190, 240), RGB565(170, 220, 250), RGB565(110, 175, 235), RGB565(90, 160, 225),
+    };
+    static const uint16_t blood[5] = {
+        RGB565(90, 10, 20), RGB565(120, 20, 30), RGB565(70, 8, 20), RGB565(40, 5, 15), RGB565(20, 2, 8),
+    };
+    const uint16_t *bands = l3_stage == 0 ? sunset : (l3_stage == 1 ? sky : blood);
+    for (int y = strip_y0; y < strip_y0 + strip_rows; y++) fill(0, y, GAME_W, 1, bands[y * 5 / GAME_H]);
 }
 
-static void l3_draw_temple(void) {
-    // The temple skyline across the bottom of the screen: a fixed picture, copied from flash.
+static void l3_draw_scenery(void) {
+    // The temple skyline across the bottom, copied from flash.
     const int y0 = GAME_H - L3_TEMPLE_STRIP_H;
     for (int y = y0; y < GAME_H; y++) {
         if (y < strip_y0 || y >= strip_y0 + strip_rows) continue;
         memcpy(strip + (y - strip_y0) * GAME_W, l3_temple_strip + (y - y0) * GAME_W, GAME_W * sizeof *strip);
     }
+    if (l3_stage == 1) {
+        // Small white clouds, fixed in place on the sky.
+        static const int cloud[4][3] = {{20, 60, 90}, {300, 120, 110}, {120, 200, 80}, {360, 260, 100}};
+        for (int i = 0; i < 4; i++) {
+            fill(cloud[i][0], cloud[i][1] + 6, cloud[i][2], 8, RGB565(255, 255, 255));
+            fill(cloud[i][0] + 12, cloud[i][1], cloud[i][2] - 24, 8, RGB565(255, 255, 255));
+        }
+    }
+    if (l3_stage == 2) {
+        // The blood moon, fixed high in the sky.
+        blit_sprite(l3_blood_moon, L3_BLOOD_MOON_W, L3_BLOOD_MOON_H, 300, 24, -1, 0);
+    }
 }
 
 static void l3_draw_platforms(void) {
-    for (int i = 0; i < L3_PLATS; i++) {
+    const uint16_t *spr;
+    int tw, th;
+    if (l3_stage == 0) {
+        spr = l3_temple_platform, tw = L3_TEMPLE_PLATFORM_W, th = L3_TEMPLE_PLATFORM_H;
+    } else if (l3_stage == 1) {
+        spr = l3_cloud_platform, tw = L3_CLOUD_PLATFORM_W, th = L3_CLOUD_PLATFORM_H;
+    } else {
+        spr = l3_dark_stone_platform, tw = L3_DARK_STONE_PLATFORM_W, th = L3_DARK_STONE_PLATFORM_H;
+    }
+    for (int i = 0; i < l3_nplat; i++) {
         const L3Plat *p = &l3_plat[i];
+        if (p->gone_t > 0) continue; // vanished
         int sy = p->y - l3_cam;
-        if (sy + 14 < strip_y0 || sy > strip_y0 + strip_rows) continue;
-        const uint16_t *spr;
-        int tw, th;
-        if (i == L3_GOAL) {
-            spr = l3_cloud_platform, tw = L3_CLOUD_PLATFORM_W, th = L3_CLOUD_PLATFORM_H;
-        } else {
-            spr = l3_temple_platform, tw = L3_TEMPLE_PLATFORM_W, th = L3_TEMPLE_PLATFORM_H;
-        }
-        for (int x = 0; x < p->w; x += tw) blit_sprite(spr, tw, th, p->x + x, sy, -1, 0);
+        if (sy + th < strip_y0 || sy > strip_y0 + strip_rows) continue;
+        // A disappearing platform fades out (dissolves) while it's counting down.
+        int dissolve = p->vanish_t > 0 ? (L3_VANISH - p->vanish_t) * 16 / L3_VANISH : 0;
+        for (int x = 0; x < p->w; x += tw) blit_sprite(spr, tw, th, p->x + x, sy, -1, dissolve);
     }
 }
 
 static void l3_draw_diyas(void) {
-    for (int i = 0; i < L3_CP_MAX; i++) {
-        const L3Plat *p = &l3_plat[l3_diya_plat[i]];
+    for (int i = 0; i < 3; i++) {
+        const L3Plat *p = &l3_plat[l3_diya[i]];
         int x = p->x + p->w / 2 - L3_DIYA_LAMP_W / 2;
         int y = p->y - L3_DIYA_LAMP_H - l3_cam;
-        // A lit diya is bright; an unlit one is dimmed.
         blit_sprite(l3_diya_lamp, L3_DIYA_LAMP_W, L3_DIYA_LAMP_H, x, y, -1, l3_lit[i] ? 0 : 8);
     }
 }
@@ -1960,15 +2040,15 @@ static void l3_draw(void) {
         return;
     }
 
-    l3_sky();
-    l3_draw_temple();
+    l3_draw_sky();
+    l3_draw_scenery();
     l3_draw_platforms();
     l3_draw_diyas();
 
     // The Pushpaka Vimana, with Ravana and Sita, above the goal.
     blit_sprite(l3_pushpaka_vimana, L3_PUSHPAKA_VIMANA_W, L3_PUSHPAKA_VIMANA_H, 160, l3_chariot_y - l3_cam, -1, 0);
 
-    // Jatayu, reusing the Level 2 sprite, drawn facing the way he last moved.
+    // Jatayu, reusing the Level 2 sprite (30% smaller), facing the way he last moved.
     int jx = l3p.x - L3_JATAYU_W / 2, jy = l3_feet() - L3_JATAYU_H - l3_cam;
     blit_sprite_flip(l3_jatayu, L3_JATAYU_W, L3_JATAYU_H, jx, jy, -1, 0, l3p.facing < 0);
 
@@ -1976,39 +2056,44 @@ static void l3_draw(void) {
         fill(0, 0, GAME_W, HUD_H, COL_HUD);
         fill(0, HUD_H - 1, GAME_W, 1, COL_HUDLN);
         text(6, 9, "JATAYU", COL_TEXT, 1);
-        char buf[24];
-        int lit = 0;
-        for (int i = 0; i < L3_CP_MAX; i++) lit += l3_lit[i];
-        snprintf(buf, sizeof buf, "STAGE 3A  DIYAS %d/%d", lit, L3_CP_MAX);
+        static const char *const stage_name[L3_STAGES] = {"STAGE 3A", "STAGE 3B", "STAGE 3C"};
+        char buf[32];
+        snprintf(buf, sizeof buf, "%s  DIYAS %d/3", stage_name[l3_stage], l3_lit_count());
         text(GAME_W - 6 * (int)strlen(buf) - 6, 9, buf, COL_GOLD, 1);
     }
 
+    static const char *const stage_title[L3_STAGES][2] = {
+        {"STAGE 3A", "TEMPLE ASCENT"}, {"STAGE 3B", "CELESTIAL SKY"}, {"STAGE 3C", "BLOOD MOON PURSUIT"},
+    };
+    static const char *const escape_msg[L3_STAGES] = {"RAVANA ESCAPES!", "SO CLOSE!", "JATAYU CONFRONTS RAVANA!"};
     if (l3_state == L3_INTRO) {
-        text_centred_shadow(120, "STAGE 3A", COL_GOLD, 3);
-        text_centred_shadow(160, "TEMPLE ASCENT", COL_TEXT, 2);
-    } else if (l3_state == L3_ESCAPE || l3_state == L3_DONE) {
-        text_centred_shadow(120, "RAVANA ESCAPES!", COL_GOLD, 3);
-        if (l3_state == L3_DONE && ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0))
-            text_centred_shadow(200, "SET: TITLE", COL_WHITE, 2);
+        text_centred_shadow(110, stage_title[l3_stage][0], COL_GOLD, 3);
+        text_centred_shadow(150, stage_title[l3_stage][1], COL_TEXT, 2);
+    } else if (l3_state == L3_ESCAPE) {
+        text_centred_shadow(120, escape_msg[l3_stage], COL_GOLD, 3);
+    } else if (l3_state == L3_DONE) {
+        text_centred_shadow(110, "LEVEL 3 COMPLETE", COL_GOLD, 3);
+        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(200, "SET: TITLE", COL_WHITE, 2);
     }
 }
 
 // Only the parts that changed are sent. When the camera moves, everything has moved, so the
-// whole frame is redrawn; otherwise only the moving platforms, Jatayu and the HUD are marked.
+// whole frame is redrawn. Otherwise only the moving and disappearing platforms, Jatayu and the
+// HUD are marked.
 static void l3_dirty(void) {
     if (l3_cam != l3_prev_cam || l3_state != L3_PLAY) {
         mark_all();
         l3_prev_cam = l3_cam;
         return;
     }
-    for (int i = 0; i < L3_PLATS; i++) {
+    for (int i = 0; i < l3_nplat; i++) {
         const L3Plat *p = &l3_plat[i];
-        if (p->moving) mark(p->x, p->y - l3_cam - 2, p->x + p->w, p->y - l3_cam + 14);
+        if (p->type != L3_STATIC) mark(p->x, p->y - l3_cam - 2, p->x + p->w, p->y - l3_cam + 16);
     }
     // Wide enough for the whole sprite, so nothing is left behind when he moves.
-    mark(l3p.x - L3_JATAYU_W / 2 - 4, l3_feet() - L3_JATAYU_H - l3_cam - 4, l3p.x + L3_JATAYU_W / 2 + 4, l3_feet() - l3_cam + 4);
-    int lit = 0;
-    for (int i = 0; i < L3_CP_MAX; i++) lit += l3_lit[i];
+    mark(l3p.x - L3_JATAYU_W / 2 - 4, l3_feet() - L3_JATAYU_H - l3_cam - 4, l3p.x + L3_JATAYU_W / 2 + 4,
+         l3_feet() - l3_cam + 4);
+    int lit = l3_lit_count();
     if (lit != l3_prev_lit) {
         mark(0, 0, GAME_W, HUD_H);
         l3_prev_lit = lit;
