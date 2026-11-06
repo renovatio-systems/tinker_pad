@@ -19,6 +19,7 @@
 #include "assets.h"
 #include "font5x7.h"
 #include "jatayu_img.h"
+#include "l2_sprites.h"
 
 // ---- Layout ----------------------------------------------------------------------------
 
@@ -90,6 +91,66 @@ static uint32_t tiles_now[STRIPS], tiles_prev[STRIPS], tiles_out[STRIPS];
 enum { ST_TITLE, ST_INTRO, ST_BATTLE, ST_VICTORY, ST_GAMEOVER };
 enum { SW_NONE, SW_LEFT, SW_RIGHT, SW_DOUBLE };
 
+// ---- Level 2: The Boxing Ring ----------------------------------------------------------
+// Jatayu fights three Rakshasas one after the other, on the ground, Street Fighter style.
+//   LEFT / RIGHT  walk            UP  jump
+//   DOWN (hold)   shield, takes a quarter of the damage
+//   MID           chakra from his beak, knocks back what it hits
+//   SET           trident thrown from his chest (costs energy)
+//   RST           back to the title
+
+#define L2_GROUND       310
+#define L2_WALK         4.0f
+#define L2_JUMP         (-11.5f)
+#define L2_GRAVITY      0.75f
+#define L2_HP           200
+#define L2_ENERGY       100
+#define L2_CANNON_COST  10
+#define L2_BANNER       90 // ticks the next enemy and its power are shown
+#define L2_PROJS        16
+#define L2_BOX_HALF     28 // Jatayu's hit box: 56 wide, 100 tall, standing on his feet
+#define L2_BOX_H        100
+
+enum { PJ_BEAM, PJ_ORB, PJ_DROP, PJ_WAVE, PJ_PCHAKRA }; // PJ_BEAM is Jatayu's trident, PJ_PCHAKRA his punch chakra
+enum { FOE_SHADOW, FOE_BLOOD, FOE_COMMANDER };
+enum { FOE_WALK, FOE_HIDE, FOE_CHARGE, FOE_WIND };
+enum { L2_BANNER_ST, L2_FIGHT, L2_VICTORY, L2_LOST };
+
+// w and h are the sprite. bw is the body the punches and hits land on, narrower than the
+// sprite where the sprite has a spear or lightning.
+static const struct { const char *name, *power; int w, h, bw, hp; const uint16_t *spr; } l2_foe[3] = {
+    {"SHADOW SPEARMAN", "POWER: SHADOW STEP", L2_SHADOW_SPEARMAN_W, L2_SHADOW_SPEARMAN_H, 56, 60, l2_shadow_spearman},
+    {"BLOOD WARRIOR", "POWER: BLOOD RAGE", L2_BLOOD_WARRIOR_W, L2_BLOOD_WARRIOR_H, 62, 80, l2_blood_warrior},
+    {"DEMON COMMANDER", "POWER: THUNDER ROAR", L2_DEMON_COMMANDER_W, L2_DEMON_COMMANDER_H, 84, 120, l2_demon_commander},
+};
+
+typedef struct {
+    float x, y, vx, vy;
+    int kind, life, alive;
+    int hit; // it has connected: it stops and stays on screen for a few ticks
+} L2Proj;
+
+static struct {
+    float x, y, vy; // x is the centre, y the feet
+    int hp, energy, facing, on_ground, shielding;
+    int invuln, cd_punch, cd_cannon, energy_t;
+} l2p;
+
+static struct {
+    float x, y, vx; // x is the centre, y the feet
+    float recoil;   // pushed back by a punch, eases to zero
+    int type, state, t, cd, hp, dying, visible, hit_done, cd_touch;
+} l2e;
+
+static L2Proj l2_proj[L2_PROJS];
+static int l2_on, l2_stage, l2_state, l2_t, l2_score;
+static int l2_prev_hp = -1, l2_prev_energy = -1, l2_prev_score = -1, l2_prev_foe = -1;
+
+static void level2_start(void);
+static void l2_step(uint8_t held, uint8_t pressed);
+static void l2_draw(void);
+static void l2_dirty(void);
+
 // ---- Small helpers ---------------------------------------------------------------------
 
 static uint32_t rng_state = 2463534242u;
@@ -154,7 +215,14 @@ static void text_centred_shadow(int y, const char *s, uint16_t c, int scale) {
 // Draws a colour-keyed sprite with its top-left at (x0, y0). `solid` >= 0 paints every
 // opaque pixel that colour (hit flash, silhouette); `dissolve` (0..16) drops that many
 // sixteenths of the pixels, in a fixed scatter, for the defeat animation.
+static void blit_sprite_flip(const uint16_t *spr, int w, int h, int x0, int y0, int solid, int dissolve, int flip);
+
 static void blit_sprite(const uint16_t *spr, int w, int h, int x0, int y0, int solid, int dissolve) {
+    blit_sprite_flip(spr, w, h, x0, y0, solid, dissolve, 0);
+}
+
+// The same, mirrored left to right when `flip` is set, so a sprite drawn facing right can face left.
+static void blit_sprite_flip(const uint16_t *spr, int w, int h, int x0, int y0, int solid, int dissolve, int flip) {
     int ya = y0 > strip_y0 ? y0 : strip_y0;
     int yb = y0 + h < strip_y0 + strip_rows ? y0 + h : strip_y0 + strip_rows;
     for (int y = ya; y < yb; y++) {
@@ -163,7 +231,7 @@ static void blit_sprite(const uint16_t *spr, int w, int h, int x0, int y0, int s
         for (int i = 0; i < w; i++) {
             int x = x0 + i;
             if (x < 0 || x >= GAME_W) continue;
-            uint16_t c = src[i];
+            uint16_t c = src[flip ? w - 1 - i : i];
             if (c == SPRITE_KEY) continue;
             if (dissolve && (int)((x * 7 + y * 13 + ((x ^ y) * 3)) & 15) < dissolve) continue;
             row[x] = solid >= 0 ? (uint16_t)solid : c;
@@ -282,6 +350,8 @@ static struct {
     float last_dx, last_dy;
 } pl;
 
+#define TITLE_SET_WINDOW (GAME_TICK_HZ / 2) // ticks to wait for a second SET on the title
+static int title_set_t; // ticks left to see whether SET is pressed again
 static int state;
 static int force_all; // redraw every strip on the next frame
 static unsigned ticks;
@@ -332,6 +402,8 @@ static void reset_level(void) {
 }
 
 void game_init(void) {
+    l2_on = 0;
+    title_set_t = 0;
     state = ST_TITLE;
     state_t = 0;
     ticks = 0;
@@ -685,7 +757,21 @@ static void step(uint8_t held, uint8_t pressed) {
     }
 
     if (state == ST_TITLE) {
-        if (pressed & JOY_SET) reset_level();
+        // SET starts level 1. A second SET within half a second skips straight to level 2.
+        if (pressed & JOY_SET) {
+            if (title_set_t) {
+                title_set_t = 0;
+                level2_start();
+                return;
+            }
+            title_set_t = TITLE_SET_WINDOW;
+        }
+        if (title_set_t && --title_set_t == 0) reset_level();
+        return;
+    }
+
+    if (l2_on) {
+        l2_step(held, pressed);
         return;
     }
 
@@ -742,7 +828,7 @@ static void step(uint8_t held, uint8_t pressed) {
                   (rnd() & 1) ? COL_GOLD : COL_GOLD2, 2);
         }
         spark(pl.x + frand(6, 24), pl.y + frand(16, 28), 0, -0.6f, 0, 12, COL_GOLD2, 2);
-        if (state_t >= 100 && (pressed & JOY_SET)) reset_level();
+        if (state_t >= 100 && (pressed & JOY_SET)) level2_start();
         break;
     }
     case ST_GAMEOVER:
@@ -927,6 +1013,10 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         draw_title();
         return;
     }
+    if (l2_on) {
+        l2_draw();
+        return;
+    }
 
     draw_battle_scene();
 
@@ -967,8 +1057,8 @@ void game_draw(uint16_t *buf, int y0, int rows) {
             memcpy(buf, "TOTAL ", 6);
             num_str(buf + 6, final_score, 5);
             text_centred_shadow(178, buf, COL_GOLD, 3);
-            text_centred_shadow(226, "LEVEL 2 COMING SOON", COL_GOLD, 2);
-            if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(264, "SET: PLAY AGAIN", COL_WHITE, 2);
+            text_centred_shadow(226, "NEXT: THE BOXING RING", COL_GOLD, 2);
+            if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(264, "SET: LEVEL 2", COL_WHITE, 2);
         }
     } else if (state == ST_BATTLE && wave == 2 && wave_t < BANNER_TICKS) {
         text_centred_shadow(76, "WAVE 2", COL_GOLD, 4);
@@ -1024,11 +1114,527 @@ static void battle_dirty(void) {
     if (pl.burst_t > 0) mark(pl.x - 112, pl.y - 112, pl.x + 112, pl.y + 112);
 }
 
+
+// ---- Level 2: helpers and state --------------------------------------------------------
+
+static void l2_foe_box(float *x0, float *y0, float *x1, float *y1) {
+    int bw = l2_foe[l2e.type].bw, h = l2_foe[l2e.type].h;
+    *x0 = l2e.x - bw / 2;
+    *x1 = l2e.x + bw / 2;
+    *y0 = l2e.y - h;
+    *y1 = l2e.y;
+}
+
+static int l2_hits_jatayu(float x0, float y0, float x1, float y1) {
+    return overlap(x0, y0, x1, y1, l2p.x - L2_BOX_HALF, l2p.y - L2_BOX_H, l2p.x + L2_BOX_HALF, l2p.y);
+}
+
+static void l2_spawn_proj(int kind, float x, float y, float vx, float vy, int life) {
+    for (int i = 0; i < L2_PROJS; i++) {
+        if (l2_proj[i].alive) continue;
+        l2_proj[i] = (L2Proj){x, y, vx, vy, kind, life, 1};
+        return;
+    }
+}
+
+static void l2_hurt_jatayu(int dmg) {
+    if (l2_state != L2_FIGHT || l2p.invuln) return;
+    if (l2p.shielding) dmg /= 4;
+    l2p.hp -= dmg;
+    l2p.invuln = 24;
+    if (l2p.hp <= 0) {
+        l2p.hp = 0;
+        l2_state = L2_LOST;
+        l2_t = 0;
+    }
+}
+
+static void l2_hurt_foe(int dmg, float x, float y) {
+    if (l2e.dying) return;
+    l2e.hp -= dmg;
+    if (l2e.hp <= 0) {
+        l2e.hp = 0;
+        l2e.dying = 40;
+        l2_score += 200;
+        burst(l2e.x, l2e.y - 30, 14, 3.5f, 22, COL_GOLD, COL_EMBER, 3, 0.1f);
+    }
+}
+
+static void l2_spawn_foe(int type) {
+    memset(&l2e, 0, sizeof l2e);
+    l2e.type = type;
+    l2e.hp = l2_foe[type].hp;
+    l2e.x = 360;
+    l2e.y = L2_GROUND;
+    l2e.visible = 1;
+    l2e.cd = 60;
+}
+
+static void level2_start(void) {
+    memset(&l2p, 0, sizeof l2p);
+    l2p.x = 240;
+    l2p.y = L2_GROUND;
+    l2p.hp = L2_HP;
+    l2p.energy = 50;
+    l2p.facing = 1;
+    l2p.on_ground = 1;
+    memset(l2_proj, 0, sizeof l2_proj);
+    l2_on = 1;
+    l2_stage = 0;
+    l2_score = 0;
+    l2_t = 0;
+    l2_state = L2_BANNER_ST;
+    l2_spawn_foe(FOE_SHADOW);
+    l2_prev_hp = l2_prev_energy = l2_prev_score = l2_prev_foe = -1;
+    force_all = 1;
+}
+
+// ---- Jatayu ----------------------------------------------------------------------------
+
+static void l2_player(uint8_t held, uint8_t pressed, int can_fight) {
+    if (l2p.invuln) l2p.invuln--;
+    if (l2p.cd_punch) l2p.cd_punch--;
+    if (l2p.cd_cannon) l2p.cd_cannon--;
+    if (++l2p.energy_t >= 6) {
+        l2p.energy_t = 0;
+        if (l2p.energy < L2_ENERGY) l2p.energy++;
+    }
+
+    // Walking and jumping. Holding DOWN on the ground raises the shield and stops him moving.
+    l2p.shielding = can_fight && l2p.on_ground && (held & JOY_DOWN) ? 1 : 0;
+    if (!l2p.shielding) {
+        if (held & JOY_LEFT) l2p.x -= L2_WALK;
+        if (held & JOY_RIGHT) l2p.x += L2_WALK;
+        if ((pressed & JOY_UP) && l2p.on_ground) {
+            l2p.vy = L2_JUMP;
+            l2p.on_ground = 0;
+        }
+    }
+    l2p.x = clampf(l2p.x, 70, GAME_W - 70);
+    l2p.facing = l2e.x >= l2p.x ? 1 : -1; // always face the Rakshasa
+    l2p.vy += L2_GRAVITY;
+    l2p.y += l2p.vy;
+    if (l2p.y >= L2_GROUND) {
+        l2p.y = L2_GROUND;
+        l2p.vy = 0;
+        l2p.on_ground = 1;
+    }
+
+    if (!can_fight) return;
+
+    // MID: punch. A chakra flies from his beak and knocks back whatever it hits.
+    if ((pressed & JOY_MID) && !l2p.shielding && l2p.cd_punch == 0) {
+        l2p.cd_punch = 18;
+        l2_spawn_proj(PJ_PCHAKRA, l2p.x + l2p.facing * 31, l2p.y - L2_JATAYU_H + 24, l2p.facing * 10.0f, 0, 36);
+    }
+
+    // SET: the trident, thrown from his chest.
+    if ((pressed & JOY_SET) && !l2p.shielding && l2p.cd_cannon == 0 && l2p.energy >= L2_CANNON_COST) {
+        l2p.energy -= L2_CANNON_COST;
+        l2p.cd_cannon = 12;
+        l2_spawn_proj(PJ_BEAM, l2p.x + l2p.facing * 21, l2p.y - L2_JATAYU_H * 55 / 100, l2p.facing * 9.0f, 0, 45);
+    }
+}
+
+// ---- The Rakshasas ---------------------------------------------------------------------
+
+static void l2_foe_ai(void) {
+    int t = l2e.type;
+    float dir = l2p.x < l2e.x ? -1.0f : 1.0f; // towards Jatayu
+    float dist = fabsf(l2p.x - l2e.x);
+    if (l2e.cd_touch) l2e.cd_touch--;
+    if (l2e.recoil != 0) {
+        l2e.x = clampf(l2e.x + l2e.recoil, 30, GAME_W - 30);
+        l2e.recoil *= 0.7f;
+        if (fabsf(l2e.recoil) < 0.3f) l2e.recoil = 0;
+    }
+
+    switch (l2e.state) {
+    case FOE_WALK: {
+        static const float speed[3] = {1.6f, 1.2f, 0.8f};
+        if (dist > 60) l2e.x += dir * speed[t];
+        if (--l2e.cd <= 0) {
+            l2e.t = 0;
+            if (t == FOE_SHADOW) {
+                l2e.state = FOE_HIDE;
+                l2e.visible = 0;
+            } else if (t == FOE_BLOOD) {
+                l2e.state = FOE_CHARGE;
+                l2e.vx = dir * 7.0f;
+                l2e.hit_done = 0;
+            } else {
+                l2e.state = FOE_WIND;
+            }
+        }
+        break;
+    }
+    case FOE_HIDE:
+        // Shadow Step: reappear beside Jatayu and throw a dark orb back at him.
+        if (++l2e.t >= 14) {
+            l2e.x = clampf(l2p.x - dir * 50.0f, 40, GAME_W - 40);
+            l2e.visible = 1;
+            l2e.state = FOE_WALK;
+            l2e.cd = 100;
+            // The chakra flies from the Spearman's eyes, near the top of his head.
+            l2_spawn_proj(PJ_ORB, l2e.x + dir * 14, l2e.y - l2_foe[FOE_SHADOW].h + 22, dir * 5.5f, 0, 120);
+        }
+        break;
+    case FOE_CHARGE: {
+        // Blood Rage: a charge across the ring, then blood rains down.
+        l2e.x = clampf(l2e.x + l2e.vx, 30, GAME_W - 30);
+        l2e.t++;
+        float x0, y0, x1, y1;
+        l2_foe_box(&x0, &y0, &x1, &y1);
+        if (!l2e.hit_done && l2_hits_jatayu(x0, y0, x1, y1)) {
+            l2_hurt_jatayu(14);
+            l2e.hit_done = 1;
+        }
+        if (l2e.t >= 24 || l2e.hit_done) {
+            for (int i = 0; i < 4; i++) l2_spawn_proj(PJ_DROP, 30 + rnd() % 420, 30, 0, 3.6f, 150);
+            l2e.state = FOE_WALK;
+            l2e.cd = 90;
+        }
+        break;
+    }
+    case FOE_WIND:
+        // Thunder Roar: winds up, then a shockwave runs along the floor. Jump over it.
+        if (++l2e.t >= 30) {
+            l2_spawn_proj(PJ_WAVE, l2e.x + dir * 20, L2_GROUND - 16, dir * 6.5f, 0, 150);
+            l2e.state = FOE_WALK;
+            l2e.cd = 120;
+        }
+        break;
+    }
+}
+
+// Touching a Rakshasa hurts, except while Blood Warrior is mid-charge (that has its own hit).
+static void l2_foe_touch(void) {
+    if (!l2e.visible || l2e.dying || l2e.cd_touch || l2e.state == FOE_HIDE || l2e.state == FOE_CHARGE) return;
+    float x0, y0, x1, y1;
+    l2_foe_box(&x0, &y0, &x1, &y1);
+    if (!l2_hits_jatayu(x0, y0, x1, y1)) return;
+    static const int touch[3] = {8, 10, 12};
+    l2_hurt_jatayu(touch[l2e.type]);
+    l2e.cd_touch = 30;
+}
+
+// ---- Projectiles -----------------------------------------------------------------------
+
+// A projectile that connects stops where it hit and stays on screen for a few ticks, so the hit
+// is always seen, even when the Rakshasa is right next to Jatayu.
+static void l2_proj_hit(L2Proj *p) {
+    p->hit = 1;
+    p->vx = p->vy = 0;
+    p->life = 3;
+}
+
+static void l2_projectiles(void) {
+    for (int i = 0; i < L2_PROJS; i++) {
+        L2Proj *p = &l2_proj[i];
+        if (!p->alive) continue;
+        if (p->hit) { // stopped where it connected, so it can't hit twice
+            if (--p->life <= 0) p->alive = 0;
+            continue;
+        }
+        p->x += p->vx;
+        p->y += p->vy;
+        if (--p->life <= 0 || p->x < -20 || p->x > GAME_W + 20 || p->y > GAME_H) {
+            p->alive = 0;
+            continue;
+        }
+        switch (p->kind) {
+        case PJ_BEAM: // the trident: a hit ends it
+        case PJ_PCHAKRA: { // the punch chakra: a hit knocks the Rakshasa back
+            float x0, y0, x1, y1;
+            float r = p->kind == PJ_BEAM ? 14 : 8;
+            if (l2e.visible && !l2e.dying) {
+                l2_foe_box(&x0, &y0, &x1, &y1);
+                if (overlap(p->x - r, p->y - r, p->x + r, p->y + r, x0, y0, x1, y1)) {
+                    l2_hurt_foe(p->kind == PJ_BEAM ? 6 : 4, p->x, p->y);
+                    l2_score += p->kind == PJ_BEAM ? 10 : 20;
+                    if (p->kind == PJ_PCHAKRA) l2e.recoil = (p->vx > 0 ? 1.0f : -1.0f) * 6.0f;
+                    l2_proj_hit(p);
+                }
+            }
+            break;
+        }
+        case PJ_ORB:
+            if (l2_hits_jatayu(p->x - 7, p->y - 7, p->x + 7, p->y + 7)) {
+                l2_hurt_jatayu(10);
+                l2_proj_hit(p);
+            }
+            break;
+        case PJ_DROP:
+            if (p->y >= L2_GROUND) {
+                burst(p->x, L2_GROUND, 2, 1.0f, 8, RGB565(200, 20, 30), COL_EMBER, 1, 0);
+                l2_proj_hit(p);
+            } else if (l2_hits_jatayu(p->x - 1, p->y, p->x + 1, p->y + 4)) {
+                l2_hurt_jatayu(6);
+                l2_proj_hit(p);
+            }
+            break;
+        case PJ_WAVE:
+            if (l2_hits_jatayu(p->x, L2_GROUND - 22, p->x + 22, L2_GROUND)) {
+                l2_hurt_jatayu(16);
+                l2_proj_hit(p);
+            }
+            break;
+        }
+    }
+}
+
+// ---- Turn by turn ----------------------------------------------------------------------
+
+static void l2_step(uint8_t held, uint8_t pressed) {
+    update_particles();
+    l2_t++;
+
+    switch (l2_state) {
+    case L2_BANNER_ST:
+        l2_player(held, pressed, 0);
+        if (l2_t >= L2_BANNER) {
+            l2_state = L2_FIGHT;
+            l2_t = 0;
+        }
+        break;
+    case L2_FIGHT:
+        l2_player(held, pressed, 1);
+        if (l2e.dying) {
+            l2e.dying--;
+            if (l2e.dying % 6 == 0) burst(l2e.x + frand(-20, 20), l2e.y - 30 - frand(0, 30), 4, 2.0f, 14, COL_GOLD, COL_WHITE, 2, 0);
+            if (l2e.dying == 0) {
+                // Next Rakshasa, or the end of the level. Stray projectiles are cleared.
+                memset(l2_proj, 0, sizeof l2_proj);
+                if (++l2_stage < 3) {
+                    l2_spawn_foe(l2_stage);
+                    l2_state = L2_BANNER_ST;
+                    l2_t = 0;
+                } else {
+                    l2_score += l2p.hp * 5;
+                    l2_state = L2_VICTORY;
+                    l2_t = 0;
+                }
+            }
+        } else {
+            l2_foe_ai();
+            l2_foe_touch();
+        }
+        l2_projectiles();
+        break;
+    case L2_VICTORY:
+        if (l2_t >= 60 && (pressed & JOY_SET)) level2_start();
+        break;
+    case L2_LOST:
+        if (l2_t >= 36 && (pressed & JOY_SET)) level2_start();
+        break;
+    }
+}
+
+
+// ---- Level 2: drawing ------------------------------------------------------------------
+
+// A plain dark night: a sky that fades from near black to deep blue, a few stars and a dark
+// floor with a gold edge. It is drawn in code each time, so there is no picture stored in RAM.
+static const struct { int x, y; } l2_stars[] = {
+    {30, 50}, {95, 120}, {160, 35}, {230, 85}, {300, 60}, {372, 30}, {440, 110}, {70, 200}, {410, 190}, {260, 150},
+};
+
+static void l2_arena(void) {
+    for (int y = strip_y0; y < strip_y0 + strip_rows; y++) {
+        if (y < L2_GROUND) {
+            int t = y * 40 / L2_GROUND; // 0 at the top, 39 at the floor
+            fill(0, y, GAME_W, 1, RGB565(4 + t / 4, 6 + t / 3, 20 + t));
+        } else {
+            fill(0, y, GAME_W, 1, RGB565(18, 16, 28));
+        }
+    }
+    for (int i = 0; i < (int)(sizeof l2_stars / sizeof l2_stars[0]); i++)
+        fill(l2_stars[i].x, l2_stars[i].y, 2, 2, RGB565(200, 200, 230));
+    fill(0, L2_GROUND, GAME_W, 2, RGB565(90, 70, 40));
+}
+
+static void l2_hud(void) {
+    fill(0, 0, GAME_W, HUD_H, COL_HUD);
+    fill(0, HUD_H - 1, GAME_W, 1, COL_HUDLN);
+
+    blit_sprite(spr_jatayu_icon, SPR_JATAYU_ICON_W, SPR_JATAYU_ICON_H, 6, 4, -1, 0);
+    draw_bar(28, 6, 84, 8, l2p.hp, L2_HP, l2p.hp > L2_HP * 3 / 10 ? COL_RED : RGB565(255, 90, 40));
+    draw_bar(28, 20, 84, 4, l2p.energy, L2_ENERGY, COL_GOLD);
+
+    text_centred(4, "LEVEL 2", COL_GOLD, 1);
+    char buf[24];
+    memcpy(buf, "SCORE ", 6);
+    num_str(buf + 6, l2_score, 5);
+    text_centred(15, buf, COL_TEXT, 1);
+
+    // The Rakshasa being fought, and how many are left.
+    char foe[24];
+    snprintf(foe, sizeof foe, "%d/3 %s", l2_stage + 1, l2_foe[l2e.type].name);
+    text(GAME_W - 6 * (int)strlen(foe) - 6, 4, foe, COL_TEXT, 1);
+    draw_bar(GAME_W - 104, 16, 98, 6, l2e.hp, l2_foe[l2e.type].hp, RGB565(255, 90, 40));
+}
+
+// A blue beak, about the size of Jatayu's: thick at the base, hooked at the tip, pointing the
+// way it flies (dir is +1 or -1). It is drawn in bright blue so it stands out from the gold scene.
+static void l2_draw_beak(int x, int y, int dir) {
+    static const int half[14] = {3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 1, 1};
+    const uint16_t blue = RGB565(40, 120, 255), light = RGB565(160, 215, 255), dark = RGB565(15, 40, 130);
+    for (int i = 0; i < 14; i++) {
+        int px = dir > 0 ? x - 7 + i : x + 6 - i;
+        fill(px, y - half[i], 1, 2 * half[i] + 1, blue);
+    }
+    for (int i = 0; i < 8; i++) fill(dir > 0 ? x - 7 + i : x + 6 - i, y - 2, 1, 1, light); // shine on the upper edge
+    fill(dir > 0 ? x + 6 : x - 7, y, 1, 1, dark); // the hooked tip
+}
+
+// Thunder Roar: a wall of fire along the floor. Its flames shift every tick, so it looks alive.
+static void l2_draw_fire(int x) {
+    const uint16_t red = RGB565(220, 40, 10), orange = RGB565(255, 130, 20), yellow = RGB565(255, 230, 90);
+    for (int i = 0; i < 22; i++) {
+        int h = 8 + (int)((i * 7 + ticks * 3 + i * i) % 14); // 8 to 21 px tall, ragged
+        fill(x + i, L2_GROUND - h, 1, h, red);
+        if (i >= 3 && i <= 18) fill(x + i, L2_GROUND - h * 2 / 3, 1, h * 2 / 3, orange);
+        if (i >= 6 && i <= 15) fill(x + i, L2_GROUND - h / 3, 1, h / 3, yellow);
+    }
+}
+
+static void l2_draw_foe(void) {
+    if (!l2e.visible && !l2e.dying) return;
+    const uint16_t *spr = l2_foe[l2e.type].spr;
+    int w = l2_foe[l2e.type].w, h = l2_foe[l2e.type].h;
+    int solid = -1, dissolve = 0;
+    if (l2e.dying) dissolve = (40 - l2e.dying) * 16 / 40;
+    if (l2e.state == FOE_WIND) solid = COL_GLOW; // steady glow while winding up
+    // The art faces right, so a Rakshasa to the right of Jatayu is mirrored to face him.
+    blit_sprite_flip(spr, w, h, (int)(l2e.x - w / 2), (int)(l2e.y - h), solid, dissolve, l2p.x < l2e.x);
+}
+
+static void l2_draw_player(void) {
+    blit_sprite_flip(l2_jatayu, L2_JATAYU_W, L2_JATAYU_H, (int)l2p.x - L2_JATAYU_W / 2, (int)l2p.y - L2_JATAYU_H,
+                     -1, 0, l2p.facing < 0);
+    if (l2p.shielding) draw_ring(l2p.x, l2p.y - 62, 66, 3, COL_GOLD);
+}
+
+// A trident, about 60 px long: a shaft, a binding and three prongs pointing the way the shot
+// travels (dir is +1 or -1).
+static void hspan(int x0, int x1, int y, int h, uint16_t c) {
+    if (x0 > x1) {
+        int t = x0;
+        x0 = x1;
+        x1 = t;
+    }
+    fill(x0, y, x1 - x0, h, c);
+}
+
+static void l2_draw_trident(int x, int y, int dir) {
+    const uint16_t gold = RGB565(255, 200, 60), white = RGB565(255, 244, 200), dark = RGB565(150, 90, 30);
+    int tip = x + 10 * dir;
+    hspan(x - 24 * dir, tip, y - 1, 3, dark);
+    hspan(x - 24 * dir, tip, y, 1, gold);
+    fill(tip - 2, y - 11, 4, 22, gold);
+    hspan(tip, tip + 18 * dir, y - 1, 3, gold);
+    hspan(tip, tip + 14 * dir, y - 9, 3, gold);
+    hspan(tip, tip + 14 * dir, y + 7, 3, gold);
+    hspan(tip + 18 * dir, tip + 16 * dir, y - 2, 5, white);
+    hspan(tip + 14 * dir, tip + 12 * dir, y - 10, 5, white);
+    hspan(tip + 14 * dir, tip + 12 * dir, y + 6, 5, white);
+}
+
+static void l2_draw_projectiles(void) {
+    for (int i = 0; i < L2_PROJS; i++) {
+        const L2Proj *p = &l2_proj[i];
+        if (!p->alive) continue;
+        int x = (int)p->x, y = (int)p->y;
+        switch (p->kind) {
+        case PJ_BEAM:
+            l2_draw_trident(x, y, p->vx >= 0 ? 1 : -1);
+            break;
+        case PJ_PCHAKRA:
+            l2_draw_beak(x, y, p->vx >= 0 ? 1 : -1);
+            break;
+        case PJ_ORB:
+            l2_draw_beak(x, y, p->vx >= 0 ? 1 : -1);
+            break;
+        case PJ_DROP:
+            fill(x, y, 2, 4, RGB565(200, 20, 30));
+            break;
+        case PJ_WAVE:
+            l2_draw_fire(x);
+            break;
+        }
+    }
+}
+
+static void l2_draw(void) {
+    l2_arena();
+    l2_draw_foe();
+    l2_draw_player();
+    l2_draw_projectiles();
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        const Particle *p = &parts[i];
+        if (p->life > 0) fill((int)p->x, (int)p->y, p->size, p->size, p->col);
+    }
+    if (strip_y0 < HUD_H) l2_hud();
+
+    if (l2_state == L2_BANNER_ST) {
+        char num[24];
+        snprintf(num, sizeof num, "ENEMY %d OF 3", l2_stage + 1);
+        text_centred_shadow(40, num, COL_TEXT, 2);
+        text_centred_shadow(70, l2_foe[l2e.type].name, COL_GOLD, 3);
+        text_centred_shadow(118, l2_foe[l2e.type].power, COL_TEXT, 2);
+    } else if (l2_state == L2_VICTORY) {
+        tint_gold(l2_t >= 30 ? 2 : 1);
+        text_centred_shadow(60, "LEVEL 2 COMPLETE", COL_WHITE, 3);
+        char buf[24];
+        memcpy(buf, "SCORE ", 6);
+        num_str(buf + 6, l2_score, 6);
+        text_centred_shadow(120, buf, COL_GOLD, 4);
+        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(240, "SET: PLAY AGAIN", COL_WHITE, 2);
+    } else if (l2_state == L2_LOST) {
+        tint_dark(l2_t >= 24 ? 2 : 1);
+        if (l2_t >= 36) {
+            text_centred_shadow(100, "GAME OVER", COL_RED, 5);
+            if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(190, "SET: TRY AGAIN", COL_WHITE, 2);
+        }
+    }
+}
+
+// Only the parts of the screen that changed are sent. Everything that moves is marked here;
+// the previous tick's marks are added by the caller, which clears the old positions.
+static void l2_dirty(void) {
+    if (l2_state == L2_VICTORY || l2_state == L2_LOST) {
+        mark_all();
+        return;
+    }
+    if (l2p.hp != l2_prev_hp || l2p.energy != l2_prev_energy || l2_score != l2_prev_score || l2e.hp != l2_prev_foe) {
+        mark(0, 0, GAME_W, HUD_H);
+        l2_prev_hp = l2p.hp;
+        l2_prev_energy = l2p.energy;
+        l2_prev_score = l2_score;
+        l2_prev_foe = l2e.hp;
+    }
+    if (l2_state == L2_BANNER_ST) mark(0, 30, GAME_W, 150);
+    mark(l2p.x - 84, l2p.y - 150, l2p.x + 84, l2p.y + 20);
+    if (l2e.visible || l2e.dying) {
+        // The whole sprite, not just the body: spears and lightning reach beyond it.
+        float w = l2_foe[l2e.type].w, h = l2_foe[l2e.type].h;
+        mark(l2e.x - w / 2 - 6, l2e.y - h - 6, l2e.x + w / 2 + 6, l2e.y + 6);
+    }
+    for (int i = 0; i < L2_PROJS; i++)
+        if (l2_proj[i].alive) mark(l2_proj[i].x - 36, l2_proj[i].y - 18, l2_proj[i].x + 36, l2_proj[i].y + 18);
+    for (int i = 0; i < MAX_PARTICLES; i++)
+        if (parts[i].life > 0) mark(parts[i].x - 2, parts[i].y - 2, parts[i].x + 6, parts[i].y + 6);
+}
+
 void game_update(uint8_t held, uint8_t pressed) {
     step(held, pressed);
 
     memset(tiles_now, 0, sizeof tiles_now);
-    if (force_all || state == ST_VICTORY || state == ST_GAMEOVER) {
+    if (l2_on) {
+        if (force_all) mark_all();
+        else l2_dirty();
+        force_all = 0;
+    } else if (force_all || state == ST_VICTORY || state == ST_GAMEOVER) {
         mark_all();
         force_all = 0;
     } else if (state == ST_TITLE) {
