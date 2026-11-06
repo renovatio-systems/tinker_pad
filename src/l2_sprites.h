@@ -22,4 +22,8 @@ extern const uint16_t l2_blood_warrior[L2_BLOOD_WARRIOR_W * L2_BLOOD_WARRIOR_H];
 #define L2_DEMON_COMMANDER_H 147
 extern const uint16_t l2_demon_commander[L2_DEMON_COMMANDER_W * L2_DEMON_COMMANDER_H];
 
+#define L3_JATAYU_W 84
+#define L3_JATAYU_H 94
+extern const uint16_t l3_jatayu[L3_JATAYU_W * L3_JATAYU_H];
+
 #endif

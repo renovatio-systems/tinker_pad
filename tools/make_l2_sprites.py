@@ -31,6 +31,8 @@ SPRITES = [
     ("shadow_spearman.png", "l2_shadow_spearman", 134),
     ("blood_warrior.png", "l2_blood_warrior", 141),
     ("demon_commander.png", "l2_demon_commander", 147),
+    # Jatayu for Level 3: 30% smaller than in Level 2.
+    ("jatayu.png", "l3_jatayu", 94),
 ]
 
 

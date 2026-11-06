@@ -1,4 +1,4 @@
-add_executable(blank_canvas main.c game.c input.c led.c jatayu_img.c assets.c l2_sprites.c)
+add_executable(blank_canvas main.c game.c input.c led.c jatayu_img.c assets.c l2_sprites.c l3_assets.c)
 
 pico_generate_pio_header(blank_canvas ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 

@@ -13,6 +13,7 @@
 #include "game.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@
 #include "font5x7.h"
 #include "jatayu_img.h"
 #include "l2_sprites.h"
+#include "l3_assets.h"
 
 // ---- Layout ----------------------------------------------------------------------------
 
@@ -144,12 +146,19 @@ static struct {
 
 static L2Proj l2_proj[L2_PROJS];
 static int l2_on, l2_stage, l2_state, l2_t, l2_score;
+static int l3_on; // Level 3 (Stage 3A) is running
+static int l4_on, l4_t; // the Level 4 placeholder screen
 static int l2_prev_hp = -1, l2_prev_energy = -1, l2_prev_score = -1, l2_prev_foe = -1;
 
 static void level2_start(void);
 static void l2_step(uint8_t held, uint8_t pressed);
 static void l2_draw(void);
 static void l2_dirty(void);
+static void level3_start(void);
+static void level4_start(void);
+static void l3_step(uint8_t held, uint8_t pressed);
+static void l3_draw(void);
+static void l3_dirty(void);
 
 // ---- Small helpers ---------------------------------------------------------------------
 
@@ -350,8 +359,9 @@ static struct {
     float last_dx, last_dy;
 } pl;
 
-#define TITLE_SET_WINDOW (GAME_TICK_HZ / 2) // ticks to wait for a second SET on the title
-static int title_set_t; // ticks left to see whether SET is pressed again
+#define TITLE_SET_WINDOW (GAME_TICK_HZ * 12 / 10) // ticks to wait after a SET press on the title (1.2 s)
+static int title_set_t; // ticks left before the title's SET presses are acted on
+static int title_set_n; // SET presses on the title so far
 static int state;
 static int force_all; // redraw every strip on the next frame
 static unsigned ticks;
@@ -403,7 +413,10 @@ static void reset_level(void) {
 
 void game_init(void) {
     l2_on = 0;
+    l3_on = 0;
+    l4_on = 0;
     title_set_t = 0;
+    title_set_n = 0;
     state = ST_TITLE;
     state_t = 0;
     ticks = 0;
@@ -757,19 +770,32 @@ static void step(uint8_t held, uint8_t pressed) {
     }
 
     if (state == ST_TITLE) {
-        // SET starts level 1. A second SET within half a second skips straight to level 2.
+        // SET presses are counted. Once 0.6 s pass without another press: 1 starts level 1,
+        // 2 starts level 2, 3 starts level 3 and 4 starts the Level 4 placeholder.
         if (pressed & JOY_SET) {
-            if (title_set_t) {
-                title_set_t = 0;
-                level2_start();
-                return;
-            }
+            title_set_n++;
             title_set_t = TITLE_SET_WINDOW;
         }
-        if (title_set_t && --title_set_t == 0) reset_level();
+        if (title_set_t && --title_set_t == 0) {
+            int n = title_set_n;
+            title_set_n = 0;
+            if (n == 4) level4_start();
+            else if (n == 3) level3_start();
+            else if (n == 2) level2_start();
+            else if (n == 1) reset_level();
+        }
         return;
     }
 
+    if (l4_on) {
+        l4_t++;
+        if (l4_t >= 30 && (pressed & JOY_SET)) game_init();
+        return;
+    }
+    if (l3_on) {
+        l3_step(held, pressed);
+        return;
+    }
     if (l2_on) {
         l2_step(held, pressed);
         return;
@@ -1013,6 +1039,17 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         draw_title();
         return;
     }
+    if (l4_on) {
+        memset(strip, 0, (size_t)strip_rows * GAME_W * sizeof *strip);
+        text_centred_shadow(110, "LEVEL 4", COL_GOLD, 4);
+        text_centred_shadow(170, "COMING SOON", COL_WHITE, 3);
+        if (((ticks / (GAME_TICK_HZ / 2)) % 2) == 0) text_centred_shadow(250, "SET: BACK TO TITLE", COL_TEXT, 2);
+        return;
+    }
+    if (l3_on) {
+        l3_draw();
+        return;
+    }
     if (l2_on) {
         l2_draw();
         return;
@@ -1171,6 +1208,7 @@ static void l2_spawn_foe(int type) {
 }
 
 static void level2_start(void) {
+    state = ST_BATTLE; // leave the title, so the title code stops running
     memset(&l2p, 0, sizeof l2p);
     l2p.x = 240;
     l2p.y = L2_GROUND;
@@ -1422,7 +1460,7 @@ static void l2_step(uint8_t held, uint8_t pressed) {
         l2_projectiles();
         break;
     case L2_VICTORY:
-        if (l2_t >= 60 && (pressed & JOY_SET)) level2_start();
+        if (l2_t >= 60 && (pressed & JOY_SET)) level3_start();
         break;
     case L2_LOST:
         if (l2_t >= 36 && (pressed & JOY_SET)) level2_start();
@@ -1589,7 +1627,7 @@ static void l2_draw(void) {
         memcpy(buf, "SCORE ", 6);
         num_str(buf + 6, l2_score, 6);
         text_centred_shadow(120, buf, COL_GOLD, 4);
-        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(240, "SET: PLAY AGAIN", COL_WHITE, 2);
+        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(240, "SET: LEVEL 3", COL_WHITE, 2);
     } else if (l2_state == L2_LOST) {
         tint_dark(l2_t >= 24 ? 2 : 1);
         if (l2_t >= 36) {
@@ -1626,11 +1664,380 @@ static void l2_dirty(void) {
         if (parts[i].life > 0) mark(parts[i].x - 2, parts[i].y - 2, parts[i].x + 6, parts[i].y + 6);
 }
 
+
+// ---- Level 3, Stage 3A: Temple Ascent ----------------------------------------------------
+// A vertical platformer. Jatayu climbs the temple to the Pushpaka Vimana.
+//   LEFT / RIGHT  walk          UP  jump          MID  light the nearest diya (a checkpoint)
+//   SET           start, and on the last screen, back to the title
+// Physics is fixed point: y and vy are in 1/16 pixel units ("Q4").
+
+#define L3_WORLD_H    960
+#define L3_CAM_MAX    (L3_WORLD_H - GAME_H)
+#define L3_GRAV       6       // Q4 per tick, so 0.375 px per tick^2
+#define L3_JUMP       (-117)  // Q4 per tick, about 7.3 px per tick: a jump of about 72 px
+#define L3_SPEED      3
+#define L3_HALF       20      // Jatayu's hit box, half its width either side of his centre
+#define L3_HEIGHT     42      // and its height above his feet
+#define L3_REACH_X    50      // how close he must be, sideways, to light a diya
+#define L3_REACH_Y    60      // and above or below its platform
+#define L3_PLATS      23
+#define L3_GOAL       22      // the top platform, where the chariot waits
+#define L3_CP_MAX     3
+
+enum { L3_STORY, L3_INTRO, L3_PLAY, L3_ESCAPE, L3_DONE };
+
+typedef struct {
+    int x, y, w, moving, dir, min_x, max_x, dx; // y is the top of the platform
+} L3Plat;
+
+// Stage 3A layout, from the courtyard (bottom) to the chariot (top).
+static const L3Plat l3_layout[L3_PLATS] = {
+    {0, 930, 480, 0, 1, 0, 0, 0},
+    {60, 892, 144, 0, 1, 0, 0, 0},
+    {300, 856, 96, 1, 1, 230, 380, 0},
+    {180, 818, 96, 0, 1, 0, 0, 0},
+    {330, 782, 96, 0, 1, 0, 0, 0},
+    {150, 744, 96, 1, 1, 60, 260, 0},
+    {230, 706, 96, 0, 1, 0, 0, 0},
+    {60, 668, 96, 0, 1, 0, 0, 0},
+    {250, 630, 144, 0, 1, 0, 0, 0},
+    {30, 592, 96, 1, 1, 20, 220, 0},
+    {300, 554, 96, 0, 1, 0, 0, 0},
+    {120, 516, 96, 0, 1, 0, 0, 0},
+    {320, 478, 96, 1, 1, 260, 384, 0},
+    {140, 440, 96, 0, 1, 0, 0, 0},
+    {30, 402, 96, 0, 1, 0, 0, 0},
+    {250, 364, 96, 0, 1, 0, 0, 0},
+    {120, 326, 96, 1, 1, 60, 300, 0},
+    {320, 288, 96, 0, 1, 0, 0, 0},
+    {150, 250, 96, 0, 1, 0, 0, 0},
+    {30, 212, 96, 0, 1, 0, 0, 0},
+    {250, 174, 96, 1, 1, 200, 380, 0},
+    {130, 136, 96, 0, 1, 0, 0, 0},
+    {260, 110, 144, 0, 1, 0, 0, 0}, // goal
+};
+// Platforms that carry a diya, in order. Each diya can be lit once.
+static const int l3_diya_plat[L3_CP_MAX] = {8, 11, 15};
+
+static L3Plat l3_plat[L3_PLATS];
+static int l3_state, l3_t;
+static struct {
+    int x;          // centre, px
+    int y_q;        // feet, Q4
+    int vy_q;       // vertical speed, Q4 per tick
+    int on;         // platform he stands on, or -1 in the air
+    int facing;     // 1 right, -1 left
+} l3p;
+static int l3_lit[L3_CP_MAX];
+static int l3_cp;   // the platform he respawns on
+static int l3_cam;  // world y of the top of the screen
+static int l3_prev_cam;
+static int l3_chariot_y;
+static int l3_prev_lit = -1;
+
+static int l3_clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+static int l3_feet(void) { return l3p.y_q >> 4; }
+
+static int l3_over(const L3Plat *p) { return l3p.x - L3_HALF < p->x + p->w && l3p.x + L3_HALF > p->x; }
+
+static void l3_respawn(void) {
+    const L3Plat *p = &l3_plat[l3_cp];
+    l3p.x = p->x + p->w / 2;
+    l3p.y_q = p->y << 4;
+    l3p.vy_q = 0;
+    l3p.on = l3_cp;
+    l3p.facing = 1;
+}
+
+static void l3_start(void) {
+    memcpy(l3_plat, l3_layout, sizeof l3_plat);
+    memset(l3_lit, 0, sizeof l3_lit);
+    l3_cp = 0;
+    l3_chariot_y = 0;
+    l3_respawn();
+    l3_cam = l3_clamp(l3_feet() - 230, 0, L3_CAM_MAX);
+    l3_prev_cam = l3_cam;
+    l3_prev_lit = -1;
+}
+
+static void level3_start(void) {
+    state = ST_BATTLE; // leave the title, so the title code stops running
+    l2_on = 0;
+    l3_on = 1;
+    l3_state = L3_STORY;
+    l3_t = 0;
+    force_all = 1;
+    l3_start();
+}
+
+static void l3_step(uint8_t held, uint8_t pressed) {
+    l3_t++;
+    if (l3_state == L3_STORY) {
+        if (pressed & JOY_SET) {
+            l3_state = L3_INTRO;
+            l3_t = 0;
+        }
+        return;
+    }
+    if (l3_state == L3_INTRO) {
+        if (l3_t >= 90) {
+            l3_state = L3_PLAY;
+            l3_t = 0;
+        }
+        return;
+    }
+    if (l3_state == L3_ESCAPE) {
+        // The chariot climbs out of the top of the stage.
+        l3_chariot_y -= 3;
+        if (l3_t >= 120) {
+            l3_state = L3_DONE;
+            l3_t = 0;
+        }
+        return;
+    }
+    if (l3_state == L3_DONE) {
+        if (l3_t >= 30 && (pressed & JOY_SET)) game_init();
+        return;
+    }
+
+    // 1. Platforms move between their two ends.
+    for (int i = 0; i < L3_PLATS; i++) {
+        L3Plat *p = &l3_plat[i];
+        p->dx = 0;
+        if (!p->moving) continue;
+        int old = p->x;
+        p->x += p->dir;
+        if (p->x <= p->min_x) {
+            p->x = p->min_x;
+            p->dir = 1;
+        } else if (p->x >= p->max_x) {
+            p->x = p->max_x;
+            p->dir = -1;
+        }
+        p->dx = p->x - old;
+    }
+
+    // 2. Standing on a moving platform carries Jatayu with it, or he steps off the end.
+    if (l3p.on >= 0) {
+        const L3Plat *p = &l3_plat[l3p.on];
+        if (!l3_over(p)) {
+            l3p.on = -1;
+        } else {
+            l3p.x += p->dx;
+            l3p.y_q = p->y << 4;
+        }
+    }
+
+    // 3. Walking and jumping.
+    if (held & JOY_LEFT) {
+        l3p.x -= L3_SPEED;
+        l3p.facing = -1;
+    }
+    if (held & JOY_RIGHT) {
+        l3p.x += L3_SPEED;
+        l3p.facing = 1;
+    }
+    l3p.x = l3_clamp(l3p.x, L3_HALF, GAME_W - L3_HALF);
+    if ((pressed & JOY_UP) && l3p.on >= 0) {
+        l3p.vy_q = L3_JUMP;
+        l3p.on = -1;
+    }
+
+    // 4. Divine light: MID lights the nearest unlit diya within reach, and it becomes the checkpoint.
+    if (pressed & JOY_MID) {
+        int best = -1, best_d = 1 << 30;
+        for (int i = 0; i < L3_CP_MAX; i++) {
+            if (l3_lit[i]) continue;
+            const L3Plat *p = &l3_plat[l3_diya_plat[i]];
+            int dx = abs(l3p.x - (p->x + p->w / 2)), dy = abs(l3_feet() - p->y);
+            if (dx > L3_REACH_X || dy > L3_REACH_Y) continue; // too far from this diya
+            if (dx + dy < best_d) {
+                best_d = dx + dy;
+                best = i;
+            }
+        }
+        if (best >= 0) {
+            l3_lit[best] = 1;
+            l3_cp = l3_diya_plat[best];
+        }
+    }
+
+    // 5. Gravity, and landing on a platform from above only.
+    if (l3p.on < 0) {
+        int prev = l3_feet();
+        l3p.vy_q += L3_GRAV;
+        l3p.y_q += l3p.vy_q;
+        int feet = l3_feet();
+        if (l3p.vy_q >= 0) {
+            for (int i = 0; i < L3_PLATS; i++) {
+                const L3Plat *p = &l3_plat[i];
+                // Any crossing of the platform top from above counts, however fast he falls.
+                if (prev <= p->y && feet >= p->y && l3_over(p)) {
+                    l3p.on = i;
+                    l3p.y_q = p->y << 4;
+                    l3p.vy_q = 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 6. Reaching the goal starts the escape. Falling off the bottom sends him back to the checkpoint.
+    if (l3p.on == L3_GOAL) {
+        l3_state = L3_ESCAPE;
+        l3_t = 0;
+        return;
+    }
+    if (l3_feet() > l3_cam + GAME_H + 20) l3_respawn();
+
+    // 7. The camera follows him up and down, and stays inside the stage.
+    int sy = l3_feet() - l3_cam;
+    if (sy < 110) l3_cam = l3_feet() - 110;
+    else if (sy > 230) l3_cam = l3_feet() - 230;
+    l3_cam = l3_clamp(l3_cam, 0, L3_CAM_MAX);
+}
+
+
+// Stage 3A drawing. Every strip is drawn from scratch (sky, temple, platforms, diyas, chariot,
+// Jatayu, then the HUD and any message), so it works with the dirty-strip system.
+static void l3_sky(void) {
+    // Sunset: saffron at the top, orange and deep red towards the temple.
+    for (int y = strip_y0; y < strip_y0 + strip_rows; y++) {
+        int t = y * 5 / GAME_H;
+        static const uint16_t band[5] = {
+            RGB565(250, 190, 90), RGB565(250, 150, 60), RGB565(240, 110, 50),
+            RGB565(200, 70, 50), RGB565(120, 40, 50),
+        };
+        fill(0, y, GAME_W, 1, band[t]);
+    }
+}
+
+static void l3_draw_temple(void) {
+    // The temple skyline across the bottom of the screen: a fixed picture, copied from flash.
+    const int y0 = GAME_H - L3_TEMPLE_STRIP_H;
+    for (int y = y0; y < GAME_H; y++) {
+        if (y < strip_y0 || y >= strip_y0 + strip_rows) continue;
+        memcpy(strip + (y - strip_y0) * GAME_W, l3_temple_strip + (y - y0) * GAME_W, GAME_W * sizeof *strip);
+    }
+}
+
+static void l3_draw_platforms(void) {
+    for (int i = 0; i < L3_PLATS; i++) {
+        const L3Plat *p = &l3_plat[i];
+        int sy = p->y - l3_cam;
+        if (sy + 14 < strip_y0 || sy > strip_y0 + strip_rows) continue;
+        const uint16_t *spr;
+        int tw, th;
+        if (i == L3_GOAL) {
+            spr = l3_cloud_platform, tw = L3_CLOUD_PLATFORM_W, th = L3_CLOUD_PLATFORM_H;
+        } else {
+            spr = l3_temple_platform, tw = L3_TEMPLE_PLATFORM_W, th = L3_TEMPLE_PLATFORM_H;
+        }
+        for (int x = 0; x < p->w; x += tw) blit_sprite(spr, tw, th, p->x + x, sy, -1, 0);
+    }
+}
+
+static void l3_draw_diyas(void) {
+    for (int i = 0; i < L3_CP_MAX; i++) {
+        const L3Plat *p = &l3_plat[l3_diya_plat[i]];
+        int x = p->x + p->w / 2 - L3_DIYA_LAMP_W / 2;
+        int y = p->y - L3_DIYA_LAMP_H - l3_cam;
+        // A lit diya is bright; an unlit one is dimmed.
+        blit_sprite(l3_diya_lamp, L3_DIYA_LAMP_W, L3_DIYA_LAMP_H, x, y, -1, l3_lit[i] ? 0 : 8);
+    }
+}
+
+static void l3_draw(void) {
+    if (l3_state == L3_STORY) {
+        memcpy(strip, l3_story + (size_t)strip_y0 * GAME_W, (size_t)strip_rows * GAME_W * sizeof *strip);
+        if (strip_y0 + strip_rows > 260 && strip_y0 < 300) {
+            fill(0, 262, GAME_W, 40, COL_SHADOW);
+            text_centred(272, "RAVANA KIDNAPS SITA", COL_GOLD, 2);
+        }
+        if (strip_y0 + strip_rows > 300 && strip_y0 < 320 && ((ticks / 15) & 1) == 0)
+            text_centred(302, "SET: START", COL_WHITE, 1);
+        return;
+    }
+
+    l3_sky();
+    l3_draw_temple();
+    l3_draw_platforms();
+    l3_draw_diyas();
+
+    // The Pushpaka Vimana, with Ravana and Sita, above the goal.
+    blit_sprite(l3_pushpaka_vimana, L3_PUSHPAKA_VIMANA_W, L3_PUSHPAKA_VIMANA_H, 160, l3_chariot_y - l3_cam, -1, 0);
+
+    // Jatayu, reusing the Level 2 sprite, drawn facing the way he last moved.
+    int jx = l3p.x - L3_JATAYU_W / 2, jy = l3_feet() - L3_JATAYU_H - l3_cam;
+    blit_sprite_flip(l3_jatayu, L3_JATAYU_W, L3_JATAYU_H, jx, jy, -1, 0, l3p.facing < 0);
+
+    if (strip_y0 < HUD_H) {
+        fill(0, 0, GAME_W, HUD_H, COL_HUD);
+        fill(0, HUD_H - 1, GAME_W, 1, COL_HUDLN);
+        text(6, 9, "JATAYU", COL_TEXT, 1);
+        char buf[24];
+        int lit = 0;
+        for (int i = 0; i < L3_CP_MAX; i++) lit += l3_lit[i];
+        snprintf(buf, sizeof buf, "STAGE 3A  DIYAS %d/%d", lit, L3_CP_MAX);
+        text(GAME_W - 6 * (int)strlen(buf) - 6, 9, buf, COL_GOLD, 1);
+    }
+
+    if (l3_state == L3_INTRO) {
+        text_centred_shadow(120, "STAGE 3A", COL_GOLD, 3);
+        text_centred_shadow(160, "TEMPLE ASCENT", COL_TEXT, 2);
+    } else if (l3_state == L3_ESCAPE || l3_state == L3_DONE) {
+        text_centred_shadow(120, "RAVANA ESCAPES!", COL_GOLD, 3);
+        if (l3_state == L3_DONE && ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0))
+            text_centred_shadow(200, "SET: TITLE", COL_WHITE, 2);
+    }
+}
+
+// Only the parts that changed are sent. When the camera moves, everything has moved, so the
+// whole frame is redrawn; otherwise only the moving platforms, Jatayu and the HUD are marked.
+static void l3_dirty(void) {
+    if (l3_cam != l3_prev_cam || l3_state != L3_PLAY) {
+        mark_all();
+        l3_prev_cam = l3_cam;
+        return;
+    }
+    for (int i = 0; i < L3_PLATS; i++) {
+        const L3Plat *p = &l3_plat[i];
+        if (p->moving) mark(p->x, p->y - l3_cam - 2, p->x + p->w, p->y - l3_cam + 14);
+    }
+    // Wide enough for the whole sprite, so nothing is left behind when he moves.
+    mark(l3p.x - L3_JATAYU_W / 2 - 4, l3_feet() - L3_JATAYU_H - l3_cam - 4, l3p.x + L3_JATAYU_W / 2 + 4, l3_feet() - l3_cam + 4);
+    int lit = 0;
+    for (int i = 0; i < L3_CP_MAX; i++) lit += l3_lit[i];
+    if (lit != l3_prev_lit) {
+        mark(0, 0, GAME_W, HUD_H);
+        l3_prev_lit = lit;
+    }
+}
+
+// Level 4 is not written yet: this placeholder waits until SET takes you back to the title.
+static void level4_start(void) {
+    state = ST_BATTLE; // leave the title, so the title code stops running
+    l2_on = 0;
+    l3_on = 0;
+    l4_on = 1;
+    l4_t = 0;
+    force_all = 1;
+}
+
 void game_update(uint8_t held, uint8_t pressed) {
     step(held, pressed);
 
     memset(tiles_now, 0, sizeof tiles_now);
-    if (l2_on) {
+    if (l4_on) {
+        if (force_all) mark_all();
+        else mark(0, 240, GAME_W, 262); // only the blinking prompt changes
+        force_all = 0;
+    } else if (l3_on) {
+        if (force_all) mark_all();
+        else l3_dirty();
+        force_all = 0;
+    } else if (l2_on) {
         if (force_all) mark_all();
         else l2_dirty();
         force_all = 0;
