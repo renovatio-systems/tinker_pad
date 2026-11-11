@@ -22,6 +22,8 @@
 #include "jatayu_img.h"
 #include "l2_sprites.h"
 #include "l3_assets.h"
+#include "l4_cutscenes.h"
+#include "l_labels.h"
 
 // ---- Layout ----------------------------------------------------------------------------
 
@@ -147,7 +149,9 @@ static struct {
 static L2Proj l2_proj[L2_PROJS];
 static int l2_on, l2_stage, l2_state, l2_t, l2_score;
 static int l3_on; // Level 3 (Stage 3A) is running
-static int l4_on, l4_t; // the Level 4 placeholder screen
+static uint32_t run_total; // points from every level so far, shown at the end
+static uint32_t l3_points; // Level 3's own points, from diyas and time
+static int l4_on, l4_t; // Level 4 is running: the story scenes and the closing message
 static int l2_prev_hp = -1, l2_prev_energy = -1, l2_prev_score = -1, l2_prev_foe = -1;
 
 static void level2_start(void);
@@ -155,12 +159,19 @@ static void l2_step(uint8_t held, uint8_t pressed);
 static void l2_draw(void);
 static void l2_dirty(void);
 static void level3_start(void);
-static void level4_start(void);
+static void l4_story_start(void);
+static void l4_step(uint8_t held, uint8_t pressed);
+static void l4_draw(void);
+static void l4_dirty(void);
 static void l3_step(uint8_t held, uint8_t pressed);
 static void l3_draw(void);
 static void l3_dirty(void);
 
 // ---- Small helpers ---------------------------------------------------------------------
+
+// A Devanagari label (from l_labels.h), centred across the screen at height y, in colour c.
+#define CENTRED_LABEL(spr, w, h, y, c) blit_sprite(spr, w, h, (GAME_W - (w)) / 2, y, c, 0)
+
 
 static uint32_t rng_state = 2463534242u;
 static uint32_t rnd(void) {
@@ -412,6 +423,7 @@ static void reset_level(void) {
 }
 
 void game_init(void) {
+    run_total = 0;
     l2_on = 0;
     l3_on = 0;
     l4_on = 0;
@@ -771,7 +783,7 @@ static void step(uint8_t held, uint8_t pressed) {
 
     if (state == ST_TITLE) {
         // SET presses are counted. Once 0.6 s pass without another press: 1 starts level 1,
-        // 2 starts level 2, 3 starts level 3 and 4 starts the Level 4 placeholder.
+        // 2 starts level 2, 3 starts level 3 and 4 starts Level 4 (through its story scenes).
         if (pressed & JOY_SET) {
             title_set_n++;
             title_set_t = TITLE_SET_WINDOW;
@@ -779,7 +791,7 @@ static void step(uint8_t held, uint8_t pressed) {
         if (title_set_t && --title_set_t == 0) {
             int n = title_set_n;
             title_set_n = 0;
-            if (n == 4) level4_start();
+            if (n == 4) l4_story_start();
             else if (n == 3) level3_start();
             else if (n == 2) level2_start();
             else if (n == 1) reset_level();
@@ -788,8 +800,7 @@ static void step(uint8_t held, uint8_t pressed) {
     }
 
     if (l4_on) {
-        l4_t++;
-        if (l4_t >= 30 && (pressed & JOY_SET)) game_init();
+        l4_step(held, pressed);
         return;
     }
     if (l3_on) {
@@ -830,6 +841,7 @@ static void step(uint8_t held, uint8_t pressed) {
             bonus_attacks = pl.attacks < ATTACK_PAR ? (ATTACK_PAR - pl.attacks) * ATTACK_PTS : 0;
             bonus_health = pl.hp * HEALTH_PTS;
             final_score = pl.score + bonus_time + bonus_attacks + bonus_health;
+            run_total += (uint32_t)final_score;
             state = ST_VICTORY;
             state_t = 0;
             for (int i = 0; i < MAX_ORBS; i++) {
@@ -968,7 +980,7 @@ static void draw_hud(void) {
 
     // level and score
     char buf[24];
-    text_centred(4, "LEVEL 1", COL_GOLD, 1);
+    text_centred(4, "LVL 1", COL_GOLD, 1);
     memcpy(buf, "SCORE ", 6);
     num_str(buf + 6, pl.score, 5);
     text_centred(15, buf, COL_TEXT, 1);
@@ -1040,10 +1052,7 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         return;
     }
     if (l4_on) {
-        memset(strip, 0, (size_t)strip_rows * GAME_W * sizeof *strip);
-        text_centred_shadow(110, "LEVEL 4", COL_GOLD, 4);
-        text_centred_shadow(170, "COMING SOON", COL_WHITE, 3);
-        if (((ticks / (GAME_TICK_HZ / 2)) % 2) == 0) text_centred_shadow(250, "SET: BACK TO TITLE", COL_TEXT, 2);
+        l4_draw();
         return;
     }
     if (l3_on) {
@@ -1077,13 +1086,15 @@ void game_draw(uint16_t *buf, int y0, int rows) {
     if (y0 < HUD_H) draw_hud();
 
     if (state == ST_INTRO && state_t < INTRO_TICKS - 8) {
-        text_centred_shadow(70, "LEVEL 1", COL_GOLD, 4);
-        text_centred_shadow(112, "THE RAKSHASA ASSAULT", COL_TEXT, 2);
+        CENTRED_LABEL(l_level_1_big, L_LEVEL_1_BIG_W, L_LEVEL_1_BIG_H, 60, COL_GOLD);
+        text_centred_shadow(100, "LVL 1", COL_GOLD, 4);
+        text_centred_shadow(140, "THE RAKSHASA ASSAULT", COL_TEXT, 2);
     } else if (state == ST_VICTORY) {
         if (state_t >= 40 && state_t < 100) text_centred_shadow(120, "DHARMA PREVAILS!", COL_WHITE, 4);
         if (state_t >= 100) {
             char label[20], buf[24];
-            text_centred_shadow(36, "LEVEL 1 COMPLETE", COL_WHITE, 3);
+            CENTRED_LABEL(l_level_1_big, L_LEVEL_1_BIG_W, L_LEVEL_1_BIG_H, 0, COL_WHITE);
+            text_centred_shadow(36, "LVL 1 COMPLETE", COL_WHITE, 3);
             result_line(72, "KILLS", pl.score);
             snprintf(label, sizeof label, "TIME %dS", battle_ticks / GAME_TICK_HZ);
             result_line(96, label, bonus_time);
@@ -1449,6 +1460,7 @@ static void l2_step(uint8_t held, uint8_t pressed) {
                     l2_t = 0;
                 } else {
                     l2_score += l2p.hp * 5;
+                    run_total += (uint32_t)l2_score;
                     l2_state = L2_VICTORY;
                     l2_t = 0;
                 }
@@ -1499,7 +1511,7 @@ static void l2_hud(void) {
     draw_bar(28, 6, 84, 8, l2p.hp, L2_HP, l2p.hp > L2_HP * 3 / 10 ? COL_RED : RGB565(255, 90, 40));
     draw_bar(28, 20, 84, 4, l2p.energy, L2_ENERGY, COL_GOLD);
 
-    text_centred(4, "LEVEL 2", COL_GOLD, 1);
+    text_centred(4, "LVL 2", COL_GOLD, 1);
     char buf[24];
     memcpy(buf, "SCORE ", 6);
     num_str(buf + 6, l2_score, 5);
@@ -1615,14 +1627,17 @@ static void l2_draw(void) {
     if (strip_y0 < HUD_H) l2_hud();
 
     if (l2_state == L2_BANNER_ST) {
+        CENTRED_LABEL(l_level_2_big, L_LEVEL_2_BIG_W, L_LEVEL_2_BIG_H, 36, COL_GOLD);
+        text_centred_shadow(74, "LVL 2", COL_TEXT, 3);
         char num[24];
         snprintf(num, sizeof num, "ENEMY %d OF 3", l2_stage + 1);
-        text_centred_shadow(40, num, COL_TEXT, 2);
-        text_centred_shadow(70, l2_foe[l2e.type].name, COL_GOLD, 3);
-        text_centred_shadow(118, l2_foe[l2e.type].power, COL_TEXT, 2);
+        text_centred_shadow(104, num, COL_TEXT, 2);
+        text_centred_shadow(128, l2_foe[l2e.type].name, COL_GOLD, 3);
+        text_centred_shadow(158, l2_foe[l2e.type].power, COL_TEXT, 2);
     } else if (l2_state == L2_VICTORY) {
         tint_gold(l2_t >= 30 ? 2 : 1);
-        text_centred_shadow(60, "LEVEL 2 COMPLETE", COL_WHITE, 3);
+        CENTRED_LABEL(l_level_2_big, L_LEVEL_2_BIG_W, L_LEVEL_2_BIG_H, 10, COL_WHITE);
+        text_centred_shadow(50, "LVL 2 COMPLETE", COL_WHITE, 3);
         char buf[24];
         memcpy(buf, "SCORE ", 6);
         num_str(buf + 6, l2_score, 6);
@@ -1651,7 +1666,7 @@ static void l2_dirty(void) {
         l2_prev_score = l2_score;
         l2_prev_foe = l2e.hp;
     }
-    if (l2_state == L2_BANNER_ST) mark(0, 30, GAME_W, 150);
+    if (l2_state == L2_BANNER_ST) mark(0, 30, GAME_W, 190);
     mark(l2p.x - 84, l2p.y - 150, l2p.x + 84, l2p.y + 20);
     if (l2e.visible || l2e.dying) {
         // The whole sprite, not just the body: spears and lightning reach beyond it.
@@ -1686,7 +1701,7 @@ static void l2_dirty(void) {
 #define L3_VANISH       40      // ticks a disappearing platform stays solid after he lands on it
 #define L3_GONE         60      // ticks it stays gone
 #define L3_INTRO_TICKS  90
-#define L3_ESCAPE_TICKS 120
+#define L3_ESCAPE_TICKS 210
 
 enum { L3_STORY, L3_INTRO, L3_PLAY, L3_ESCAPE, L3_DONE };
 enum { L3_STATIC, L3_MOVING, L3_VANISHING };
@@ -1705,14 +1720,14 @@ static const L3Plat l3_layout_a[23] = {
     {150, 744, 96, 1, 1, 60, 260, 0, 0},
     {230, 706, 96, 0, 1, 0, 0, 0, 0},
     {60, 668, 96, 0, 1, 0, 0, 0, 0},
-    {250, 630, 144, 0, 1, 0, 0, 0, 0},
+    {200, 630, 144, 0, 1, 0, 0, 0, 0},
     {30, 592, 96, 1, 1, 20, 220, 0, 0},
     {300, 554, 96, 0, 1, 0, 0, 0, 0},
     {120, 516, 96, 0, 1, 0, 0, 0, 0},
     {320, 478, 96, 1, 1, 260, 384, 0, 0},
     {140, 440, 96, 0, 1, 0, 0, 0, 0},
     {30, 402, 96, 0, 1, 0, 0, 0, 0},
-    {250, 364, 96, 0, 1, 0, 0, 0, 0},
+    {150, 364, 96, 0, 1, 0, 0, 0, 0},
     {120, 326, 96, 1, 1, 60, 300, 0, 0},
     {320, 288, 96, 0, 1, 0, 0, 0, 0},
     {150, 250, 96, 0, 1, 0, 0, 0, 0},
@@ -1757,6 +1772,7 @@ static const int l3_diya_plats[L3_STAGES][3] = {{8, 11, 15}, {8, 12, 17}, {8, 12
 
 static L3Plat l3_plat[L3_MAX_PLATS];
 static int l3_nplat, l3_stage, l3_state, l3_t;
+static int l3_play_t, l3_diyas_total; // ticks spent playing, and diyas lit, over all three parts
 static int l3_diya[3];   // the platform each diya stands on, this stage
 static int l3_lit[3];    // which diyas have been lit this stage
 static int l3_cp;        // the platform he respawns on
@@ -1771,6 +1787,10 @@ static int l3_cam, l3_prev_cam, l3_chariot_y, l3_prev_lit = -1;
 
 static int l3_clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static int l3_feet(void) { return l3p.y_q >> 4; }
+
+// The camera position for the chariot escape: Jatayu on the goal sits near the bottom of the
+// screen, and the chariot waits just above him.
+static int l3_escape_cam(void) { return l3_plat[l3_nplat - 1].y - 230; }
 static int l3_lit_count(void) { return l3_lit[0] + l3_lit[1] + l3_lit[2]; }
 static int l3_over(const L3Plat *p) { return l3p.x - L3_HALF < p->x + p->w && l3p.x + L3_HALF > p->x; }
 
@@ -1810,6 +1830,8 @@ static void l3_load_stage(int stage) {
 
 static void level3_start(void) {
     state = ST_BATTLE; // leave the title, so the title code stops running
+    l3_play_t = 0;
+    l3_diyas_total = 0;
     l2_on = 0;
     l3_on = 1;
     l3_state = L3_STORY;
@@ -1833,22 +1855,31 @@ static void l3_step(uint8_t held, uint8_t pressed) {
         }
         return;
     case L3_ESCAPE:
-        // The chariot climbs out of the top of the stage.
-        l3_chariot_y -= 3;
+        // The camera pans up until the goal, Jatayu and the chariot are all in clear view, and
+        // then the chariot climbs away out of the top of the screen.
+        if (l3_cam > l3_escape_cam()) l3_cam = l3_cam - 4 < l3_escape_cam() ? l3_escape_cam() : l3_cam - 4;
+        else if (l3_t > 90) l3_chariot_y -= 2; // it waits, fully in view, then climbs away
         if (l3_t >= L3_ESCAPE_TICKS) {
             if (l3_stage < L3_STAGES - 1) {
                 l3_load_stage(l3_stage + 1);
                 l3_state = L3_INTRO;
             } else {
+                // Points: 100 for each diya lit, and 5 for each second under 5 minutes of play.
+                int secs = l3_play_t / GAME_TICK_HZ;
+                int time_bonus = secs < 300 ? (300 - secs) * 5 : 0;
+                l3_points = (uint32_t)(l3_diyas_total * 100 + time_bonus);
+                run_total += l3_points;
                 l3_state = L3_DONE;
             }
             l3_t = 0;
         }
         return;
     case L3_DONE:
-        if (l3_t >= 30 && (pressed & JOY_SET)) game_init();
+        if (l3_t >= 30 && (pressed & JOY_SET)) l4_story_start();
         return;
     }
+
+    l3_play_t++;
 
     // 1. Platforms move, and disappearing ones fade, vanish and come back.
     for (int i = 0; i < l3_nplat; i++) {
@@ -1915,6 +1946,7 @@ static void l3_step(uint8_t held, uint8_t pressed) {
         }
         if (best >= 0) {
             l3_lit[best] = 1;
+            l3_diyas_total++;
             l3_cp = l3_diya[best];
         }
     }
@@ -1948,6 +1980,7 @@ static void l3_step(uint8_t held, uint8_t pressed) {
     if (l3p.on == l3_nplat - 1) {
         l3_state = L3_ESCAPE;
         l3_t = 0;
+        l3_chariot_y = l3_escape_cam() + 38; // clear of the top bar once the camera has panned
         return;
     }
     // Falling off the bottom sends him back to his checkpoint.
@@ -2056,24 +2089,42 @@ static void l3_draw(void) {
         fill(0, 0, GAME_W, HUD_H, COL_HUD);
         fill(0, HUD_H - 1, GAME_W, 1, COL_HUDLN);
         text(6, 9, "JATAYU", COL_TEXT, 1);
-        static const char *const stage_name[L3_STAGES] = {"STAGE 3A", "STAGE 3B", "STAGE 3C"};
         char buf[32];
-        snprintf(buf, sizeof buf, "%s  DIYAS %d/3", stage_name[l3_stage], l3_lit_count());
-        text(GAME_W - 6 * (int)strlen(buf) - 6, 9, buf, COL_GOLD, 1);
+        snprintf(buf, sizeof buf, "PART %s  DIYAS %d/3", (const char *[]){"I", "II", "III"}[l3_stage], l3_lit_count());
+        int tx = GAME_W - 6 * (int)strlen(buf) - 6;
+        text(tx, 9, buf, COL_GOLD, 1);
     }
 
     static const char *const stage_title[L3_STAGES][2] = {
-        {"STAGE 3A", "TEMPLE ASCENT"}, {"STAGE 3B", "CELESTIAL SKY"}, {"STAGE 3C", "BLOOD MOON PURSUIT"},
+        {"PART I", "TEMPLE ASCENT"}, {"PART II", "CELESTIAL SKY"}, {"PART III", "BLOOD MOON PURSUIT"},
     };
+    const uint16_t *part_big[L3_STAGES] = {l_part_1_big, l_part_2_big, l_part_3_big};
+    const int part_big_w[L3_STAGES] = {L_PART_1_BIG_W, L_PART_2_BIG_W, L_PART_3_BIG_W};
+    const int part_big_h[L3_STAGES] = {L_PART_1_BIG_H, L_PART_2_BIG_H, L_PART_3_BIG_H};
     static const char *const escape_msg[L3_STAGES] = {"RAVANA ESCAPES!", "SO CLOSE!", "JATAYU CONFRONTS RAVANA!"};
-    if (l3_state == L3_INTRO) {
-        text_centred_shadow(110, stage_title[l3_stage][0], COL_GOLD, 3);
-        text_centred_shadow(150, stage_title[l3_stage][1], COL_TEXT, 2);
+    // Dark panels behind the messages, so the gold text reads on the bright sunset too.
+    if (l3_state == L3_INTRO || l3_state == L3_DONE) {
+        fill(0, 26, GAME_W, 184, RGB565(30, 8, 20));
     } else if (l3_state == L3_ESCAPE) {
-        text_centred_shadow(120, escape_msg[l3_stage], COL_GOLD, 3);
+        fill(0, 234, GAME_W, 48, RGB565(30, 8, 20));
+    }
+    if (l3_state == L3_INTRO) {
+        CENTRED_LABEL(l_level_3_big, L_LEVEL_3_BIG_W, L_LEVEL_3_BIG_H, 30, COL_GOLD);
+        text_centred_shadow(74, "LVL 3", COL_GOLD, 3);
+        CENTRED_LABEL(part_big[l3_stage], part_big_w[l3_stage], part_big_h[l3_stage], 110, COL_GOLD);
+        text_centred_shadow(152, stage_title[l3_stage][0], COL_GOLD, 2);
+        text_centred_shadow(180, stage_title[l3_stage][1], COL_TEXT, 2);
+    } else if (l3_state == L3_ESCAPE) {
+        text_centred_shadow(242, escape_msg[l3_stage], COL_GOLD, 3);
     } else if (l3_state == L3_DONE) {
-        text_centred_shadow(110, "LEVEL 3 COMPLETE", COL_GOLD, 3);
-        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(200, "SET: TITLE", COL_WHITE, 2);
+        CENTRED_LABEL(l_level_3_big, L_LEVEL_3_BIG_W, L_LEVEL_3_BIG_H, 68, COL_GOLD);
+        text_centred_shadow(110, "LVL 3 COMPLETE", COL_GOLD, 3);
+        char pts[32];
+        snprintf(pts, sizeof pts, "LVL 3 POINTS %lu", (unsigned long)l3_points);
+        text_centred_shadow(146, pts, COL_TEXT, 2);
+        snprintf(pts, sizeof pts, "TOTAL %lu", (unsigned long)run_total);
+        text_centred_shadow(172, pts, COL_GOLD, 3);
+        if ((ticks / (GAME_TICK_HZ / 2)) % 2 == 0) text_centred_shadow(236, "SET: CONTINUE", COL_WHITE, 2);
     }
 }
 
@@ -2100,14 +2151,128 @@ static void l3_dirty(void) {
     }
 }
 
-// Level 4 is not written yet: this placeholder waits until SET takes you back to the title.
-static void level4_start(void) {
+// ---- Level 4: the story ------------------------------------------------------------------
+// There is no Level 4 game. After Level 3 is completed and the player continues, the five
+// cut-scenes play in order, each with one line of narration. Then the closing message, and SET
+// returns to the title.
+
+#define L4_CAP_Y   272 // top of the caption band under the pictures
+#define L4_CUT_MIN 30  // ticks before SET moves on from a picture
+#define L4_END_MIN 40  // ticks before SET leaves the closing message
+#define L4_SCENES  5
+
+enum { L4S_CUT, L4S_END };
+
+static const uint16_t *const l4_cuts[L4_SCENES] = {l4_cut_1, l4_cut_2, l4_cut_3, l4_cut_4, l4_cut_5};
+static const char *const l4_narr[L4_SCENES] = {
+    "Ravana carried Sita away, and brave Jatayu rose to stop him.",
+    "Jatayu fought Ravana fiercely and shattered his bow and chariot.",
+    "Ravana struck Jatayu's wings with his sword.",
+    "Wounded, Jatayu fell as Ravana fled with Sita.",
+    "Rama and Lakshmana found Jatayu, who revealed Sita's abduction.",
+};
+// The closing message. An empty line is a small gap.
+static const char *const l4_end_lines[] = {
+    "JATAYU'S SACRIFICE WILL NEVER", "BE FORGOTTEN.", "",
+    "Discover the timeless story of", "courage, devotion and dharma in", "the RAMAYANA, one of the world's",
+    "oldest surviving epics.", "",
+    "READ THE RAMAYANA.", "KEEP ITS WISDOM ALIVE.", "",
+    "SHUBH DEEPAVALI!", "",
+    "May the light of dharma always", "triumph over darkness.",
+};
+
+static int l4_state, l4_scene; // which state, and which picture is up
+
+static void l4_story_start(void) {
     state = ST_BATTLE; // leave the title, so the title code stops running
     l2_on = 0;
     l3_on = 0;
     l4_on = 1;
+    l4_state = L4S_CUT;
+    l4_scene = 0;
     l4_t = 0;
     force_all = 1;
+}
+
+static void l4_step(uint8_t held, uint8_t pressed) {
+    (void)held;
+    l4_t++;
+    if (l4_state == L4S_CUT) {
+        if (l4_t >= L4_CUT_MIN && (pressed & JOY_SET)) {
+            l4_scene++;
+            l4_t = 0;
+            force_all = 1;
+            if (l4_scene >= L4_SCENES) l4_state = L4S_END;
+        }
+    } else if (l4_t >= L4_END_MIN && (pressed & JOY_SET)) {
+        game_init();
+    }
+}
+
+// Copies the picture for this strip: 480 x 320, which is the whole screen.
+static void l4_draw_image(const uint16_t *img) {
+    for (int y = strip_y0; y < strip_y0 + strip_rows; y++)
+        memcpy(strip + (y - strip_y0) * GAME_W, img + (size_t)y * GAME_W, GAME_W * sizeof *strip);
+}
+
+// Splits a narration line into at most two lines, each at most 36 characters (scale 2).
+static void l4_wrap(const char *s, char out[2][40]) {
+    size_t n = strlen(s);
+    if (n <= 36) {
+        strcpy(out[0], s);
+        out[1][0] = 0;
+        return;
+    }
+    size_t cut = 36;
+    while (cut > 0 && s[cut] != ' ') cut--;
+    memcpy(out[0], s, cut);
+    out[0][cut] = 0;
+    strncpy(out[1], s + cut + 1, 39);
+    out[1][39] = 0;
+}
+
+// The one-line narration, drawn in a caption band under the picture.
+static void l4_caption(const char *s) {
+    fill(0, L4_CAP_Y, GAME_W, GAME_H - L4_CAP_Y, RGB565(12, 6, 8));
+    fill(0, L4_CAP_Y, GAME_W, 1, COL_GOLD);
+    char lines[2][40];
+    l4_wrap(s, lines);
+    text_centred(L4_CAP_Y + 9, lines[0], COL_GOLD2, 2);
+    if (lines[1][0]) text_centred(L4_CAP_Y + 27, lines[1], COL_GOLD2, 2);
+}
+
+static void l4_draw_end(void) {
+    memset(strip, 0, (size_t)strip_rows * GAME_W * sizeof *strip);
+    char buf[32];
+    snprintf(buf, sizeof buf, "TOTAL %lu", (unsigned long)run_total);
+    text_centred(8, buf, COL_GOLD, 1);
+    int y = 34;
+    for (unsigned i = 0; i < sizeof l4_end_lines / sizeof l4_end_lines[0]; i++) {
+        const char *s = l4_end_lines[i];
+        if (!*s) {
+            y += 10;
+            continue;
+        }
+        text_centred(y, s, COL_TEXT, 2);
+        y += 20;
+    }
+}
+
+static void l4_draw(void) {
+    if (l4_state == L4S_CUT) {
+        l4_draw_image(l4_cuts[l4_scene]);
+        l4_caption(l4_narr[l4_scene]);
+        if (l4_t >= L4_CUT_MIN && ((ticks / (GAME_TICK_HZ / 2)) & 1)) text(424, 304, "SET", COL_WHITE, 1);
+    } else {
+        l4_draw_end();
+    }
+}
+
+// The pictures change only when the scene changes, so only the caption's SET hint needs
+// redrawing in between.
+static void l4_dirty(void) {
+    if (force_all || l4_state == L4S_END) mark_all();
+    else mark(0, L4_CAP_Y, GAME_W, GAME_H);
 }
 
 void game_update(uint8_t held, uint8_t pressed) {
@@ -2115,8 +2280,7 @@ void game_update(uint8_t held, uint8_t pressed) {
 
     memset(tiles_now, 0, sizeof tiles_now);
     if (l4_on) {
-        if (force_all) mark_all();
-        else mark(0, 240, GAME_W, 262); // only the blinking prompt changes
+        l4_dirty();
         force_all = 0;
     } else if (l3_on) {
         if (force_all) mark_all();
@@ -2133,7 +2297,7 @@ void game_update(uint8_t held, uint8_t pressed) {
         if (ticks % (GAME_TICK_HZ / 2) == 0) mark(150, 284, 330, 312); // the blinking prompt
     } else {
         battle_dirty();
-        if (state == ST_INTRO) mark(110, 66, 370, 132); // the level title
+        if (state == ST_INTRO) mark(110, 50, 370, 160); // the level title
     }
     for (int s = 0; s < STRIPS; s++) {
         tiles_out[s] = tiles_now[s] | tiles_prev[s];
