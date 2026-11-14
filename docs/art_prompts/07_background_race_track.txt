@@ -1,0 +1,5 @@
+Retro 16-bit pixel art for an arcade game. Hard black outlines, sharp clean pixels, no anti-aliasing, no blur, no text, no labels, no watermark. Use 3 to 4 shades per material, light from the upper left. Solid flat magenta background (#FF00FF) with no ground shadow.
+
+A night race track seen from the side, a grey asphalt track across the lower third with white and red kerbs, a line of metal barriers, floodlights on tall poles, and grandstands with silhouetted crowds in the background. A dark sky with a few stars. Full-frame landscape illustration, no cars, no people in the foreground, no text or sponsor logos.
+
+Output at 4x scale (1920 x 1280 pixels).

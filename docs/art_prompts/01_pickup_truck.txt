@@ -1,0 +1,5 @@
+Retro 16-bit pixel art for an arcade game. Hard black outlines, sharp clean pixels, no anti-aliasing, no blur, no text, no labels, no watermark. Use 3 to 4 shades per material, light from the upper left. Solid flat magenta background (#FF00FF) with no ground shadow.
+
+A pick-up truck, side 3/4 view facing left, painted bright red, chrome bumper, black roll bar over the open bed, tyres with chunky tread, a small sun-faded decal on the door, and tinted windows. Fits a 160 x 96 pixel canvas, wheels touching the bottom edge.
+
+Output at 4x scale (640 x 384 pixels).

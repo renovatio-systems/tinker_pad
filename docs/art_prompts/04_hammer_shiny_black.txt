@@ -1,0 +1,5 @@
+Retro 16-bit pixel art for an arcade game. Hard black outlines, sharp clean pixels, no anti-aliasing, no blur, no text, no labels, no watermark. Use 3 to 4 shades per material, light from the upper left. Solid flat magenta background (#FF00FF) with no ground shadow.
+
+A single mythical war hammer, shown alone, not held by anyone. The head is a heavy block of glossy black metal with bright white highlights along the top edge and small chrome bands. The handle is dark walnut with a gold ferrule and a wrapped leather grip at the bottom. The hammer stands diagonally, grip at the bottom left and head at the top right, so it can be rotated later. Fits a 40 x 48 pixel canvas.
+
+Output at 4x scale (160 x 192 pixels).

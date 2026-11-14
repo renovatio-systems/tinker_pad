@@ -13,6 +13,7 @@
 #include "reck_hammer.h"
 #include "reck_jaguar.h"
 #include "reck_sprites.h"
+#include "reck_shop.h"
 #include "title_img.h"
 
 // ---- Tuning ----------------------------------------------------------------------------
@@ -89,7 +90,7 @@
 
 // ---- State -----------------------------------------------------------------------------
 
-enum { S_TITLE, S_PLAY, S_DONE, S_LOST };
+enum { S_TITLE, S_PLAY, S_DONE, S_LOST, S_SHOP };
 enum { G_FLYING, G_KNOCKED }; // a gorilla on its way to the jaguar, or knocked back at the car
 
 typedef struct {
@@ -347,6 +348,84 @@ static void walk(int dx, int dy) {
     if (!foot_hits_car(man_x, ny, car_x)) man_y = ny;
 }
 
+// ---- Shop ------------------------------------------------------------------------------
+// After Level 1 the shop sells what the jaguar drives, wields and wears in Level 2. The bank
+// takes the WRECK$ from each run. What is bought is kept: the shop only resets when the board
+// is powered on, not between runs. Level 2 will read the choices from these variables.
+
+enum { SH_CAR, SH_HAMMER, SH_GEM, SH_BEAR, SH_BG, SH_NEXT };
+#define SHOP_ROWS 16 // the rows the cursor moves over, the last one is NEXT
+static const struct { int kind, idx, price; const char *name; } shop_rows[SHOP_ROWS] = {
+    {SH_CAR, 0, 0, "URUS"},          {SH_CAR, 1, 300, "PICKUP"},
+    {SH_CAR, 2, 800, "PORSCHE"},     {SH_CAR, 3, 1500, "FERRARI"},
+    {SH_HAMMER, 0, 0, "CLASSIC"},    {SH_HAMMER, 1, 400, "SHINY BLACK"},
+    {SH_GEM, 0, 150, "DIAMOND"},     {SH_GEM, 1, 150, "SAPPHIRE"},
+    {SH_GEM, 2, 150, "RUBY"},        {SH_GEM, 3, 150, "EMERALD"},
+    {SH_BEAR, 0, 0, "JAGUAR"},       {SH_BEAR, 1, 500, "BEAR"},
+    {SH_BG, 0, 0, "RACE TRACK"},     {SH_BG, 1, 0, "TOWN"},
+    {SH_BG, 2, 0, "VILLAGE"},        {SH_NEXT, 0, 0, "NEXT"},
+};
+
+static int shop_cur;            // the row the cursor is on
+static int bank;                // WRECK$ to spend
+static int shop_changed;        // something on the shop screen changed this tick
+static int car_sel, ham_sel, bear_sel, bg_sel;
+static uint8_t car_owned[4] = {1, 0, 0, 0};
+static uint8_t ham_owned[2] = {1, 0};
+static uint8_t bear_owned[2] = {1, 0};
+static uint8_t gem_owned[4], gem_on[4];
+
+static void enter_shop(void) {
+    bank += wreck;     // the run's WRECK$ goes in the bank
+    wreck = 0;
+    shop_cur = 0;
+    state = S_SHOP;
+    state_t = 0;
+    shop_changed = 1;
+}
+
+// Buy or select the row under the cursor. Owned items are just selected; gems toggle on and off.
+static void shop_action(void) {
+    int kind = shop_rows[shop_cur].kind, i = shop_rows[shop_cur].idx, price = shop_rows[shop_cur].price;
+    uint8_t *owned = NULL;
+    switch (kind) {
+    case SH_CAR:   owned = car_owned + i; break;
+    case SH_HAMMER: owned = ham_owned + i; break;
+    case SH_BEAR:  owned = bear_owned + i; break;
+    case SH_GEM:
+        if (gem_owned[i]) {
+            gem_on[i] = !gem_on[i];
+        } else if (bank >= price) {
+            bank -= price;
+            gem_owned[i] = gem_on[i] = 1;
+        }
+        shop_changed = 1;
+        return;
+    case SH_BG:
+        bg_sel = i;
+        shop_changed = 1;
+        return;
+    case SH_NEXT:
+        game_init(); // on to the title; Level 2 will start from here once it exists
+        return;
+    }
+    if (!*owned) {
+        if (bank < price) return;
+        bank -= price;
+        *owned = 1;
+    }
+    if (kind == SH_CAR) car_sel = i;
+    if (kind == SH_HAMMER) ham_sel = i;
+    if (kind == SH_BEAR) bear_sel = i;
+    shop_changed = 1;
+}
+
+static void shop_step(uint8_t pressed) {
+    if ((pressed & JOY_UP) && shop_cur > 0) { shop_cur--; shop_changed = 1; }
+    if ((pressed & JOY_DOWN) && shop_cur < SHOP_ROWS - 1) { shop_cur++; shop_changed = 1; }
+    if (pressed & JOY_SET) shop_action();
+}
+
 // ---- Firmware entry points -------------------------------------------------------------
 
 void game_init(void) {
@@ -455,7 +534,11 @@ static void step(uint8_t held, uint8_t pressed) {
     }
 
     case S_DONE:
-        if (state_t >= END_WAIT && (pressed & JOY_SET)) game_init();
+        if (state_t >= END_WAIT && (pressed & JOY_SET)) enter_shop();
+        return;
+
+    case S_SHOP:
+        shop_step(pressed);
         return;
 
     case S_LOST:
@@ -511,6 +594,8 @@ static void mark_for_tick(void) {
         // The picture is still; only the title and the blinking prompt move.
         mark(0, 10, GAME_W - 1, 50);
         mark(0, 280, GAME_W - 1, 310);
+    } else if (state == S_SHOP) {
+        if (shop_changed) mark_all(); // the shop only redraws when something changed
     } else if (state == S_DONE || state == S_LOST) {
         mark_all(); // these screens are mostly text and are not drawn often
     } else {
@@ -530,6 +615,7 @@ static void mark_for_tick(void) {
 void game_update(uint8_t held, uint8_t pressed) {
     step(held, pressed);
     mark_for_tick();
+    shop_changed = 0;
 }
 
 const uint32_t *game_dirty_tiles(void) {
@@ -659,6 +745,66 @@ static void draw_play(void) {
     draw_hud();
 }
 
+// The shop: the chosen Level 2 backdrop behind a panel with the list on the left, and a preview
+// of the cursor's choice on the right.
+#define COL_PANEL RGB565(14, 10, 26)
+
+static void shop_status(int r, char *out, size_t n, uint16_t *col) {
+    int kind = shop_rows[r].kind, i = shop_rows[r].idx, price = shop_rows[r].price;
+    uint8_t owned = 0;
+    int sel = 0;
+    switch (kind) {
+    case SH_CAR:   owned = car_owned[i]; sel = car_sel == i; break;
+    case SH_HAMMER: owned = ham_owned[i]; sel = ham_sel == i; break;
+    case SH_BEAR:  owned = bear_owned[i]; sel = bear_sel == i; break;
+    case SH_GEM:   owned = gem_owned[i]; sel = gem_on[i]; break;
+    case SH_BG:    owned = 1; sel = bg_sel == i; break;
+    default:       out[0] = 0; return;
+    }
+    *col = COL_TEXT;
+    if (kind == SH_GEM && owned) { snprintf(out, n, sel ? "ON" : "OFF"); return; }
+    if (owned) { snprintf(out, n, sel ? "ON" : "OWNED"); return; }
+    snprintf(out, n, "$%d", price);
+    *col = bank >= price ? COL_GOLD : COL_RED;
+}
+
+static void shop_draw(void) {
+    // The backdrop is the chosen Level 2 picture, a strip at a time.
+    memcpy(strip, shop_bg[bg_sel] + (size_t)strip_y0 * GAME_W, (size_t)strip_rows * GAME_W * sizeof *strip);
+    fill(0, 46, 252, 274, COL_PANEL);
+
+    text(8, 6, "SHOP", COL_GOLD, 3);
+    char buf[32];
+    snprintf(buf, sizeof buf, "WRECK$ %d", bank);
+    text(8, 32, buf, COL_GOLD, 2);
+
+    for (int r = 0; r < SHOP_ROWS; r++) {
+        int y = 52 + r * 16;
+        if (r == shop_cur) text(4, y, ">", COL_GOLD, 2);
+        text(20, y, shop_rows[r].name, r == shop_cur ? COL_GOLD : COL_TEXT, 2);
+        char st[16];
+        uint16_t col;
+        shop_status(r, st, sizeof st, &col);
+        if (st[0]) text(156, y, st, col, 2);
+    }
+
+    // The preview of the cursor's choice.
+    int kind = shop_rows[shop_cur].kind, i = shop_rows[shop_cur].idx;
+    static const char *const cat[] = {"CAR", "HAMMER", "JEWELS", "BEAR", "BACKDROP", ""};
+    text(262, 52, cat[kind], COL_GOLD, 2);
+    if (kind == SH_CAR) blit(shop_car[i], SHOP_CAR_W, SHOP_CAR_H, 270, 120);
+    if (kind == SH_HAMMER) {
+        blit(shop_hammer[i], SHOP_HAMMER_W, SHOP_HAMMER_H, 300, 84);
+        for (int g = 0, k = 0; g < 4; g++)
+            if (gem_on[g]) blit(shop_gem[g], SHOP_GEM, SHOP_GEM, 300 + 18 * k++, 156);
+    }
+    if (kind == SH_GEM)
+        for (int g = 0; g < 4; g++) blit(shop_gem[g], SHOP_GEM, SHOP_GEM, 268 + 48 * g, 140);
+    if (kind == SH_BEAR) blit(shop_bear, SHOP_BEAR_W, SHOP_BEAR_H, 300, 96);
+    if (kind == SH_BG) text(262, 84, shop_rows[shop_cur].name, COL_TEXT, 2);
+    if (kind == SH_NEXT) text(262, 84, "ON TO THE TITLE", COL_TEXT, 2);
+}
+
 void game_draw(uint16_t *buf, int y0, int rows) {
     strip = buf;
     strip_y0 = y0;
@@ -668,6 +814,11 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         memcpy(buf, title_img + (size_t)y0 * GAME_W, (size_t)rows * GAME_W * sizeof *buf);
         text_centred(16, "RECKALAMBO", COL_GOLD, 4);
         if ((ticks / BLINK_TICKS) % 2 == 0) text_centred(284, "PRESS SET", COL_TEXT, 3);
+        return;
+    }
+
+    if (state == S_SHOP) {
+        shop_draw();
         return;
     }
 
@@ -685,7 +836,7 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         text_centred(172, buf2, COL_GOLD, 2);
         snprintf(buf2, sizeof buf2, "TOTAL WRECK$ %d", wreck);
         text_centred(198, buf2, COL_GOLD, 2);
-        if ((ticks / BLINK_TICKS) % 2 == 0) text_centred(250, "SET: TITLE", COL_GOLD, 2);
+        if ((ticks / BLINK_TICKS) % 2 == 0) text_centred(250, "SET: SHOP", COL_GOLD, 2);
         return;
     }
 

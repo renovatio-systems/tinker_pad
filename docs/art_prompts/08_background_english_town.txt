@@ -1,0 +1,5 @@
+Retro 16-bit pixel art for an arcade game. Hard black outlines, sharp clean pixels, no anti-aliasing, no blur, no text, no labels, no watermark. Use 3 to 4 shades per material, light from the upper left. Solid flat magenta background (#FF00FF) with no ground shadow.
+
+An English high street in the evening, a row of red-brick terraced houses with bay windows and chimneys, a red post box and a black lamp post on the pavement, a church spire in the distance, a few shop fronts with awnings, and a grey cloudy sky. Full-frame landscape illustration, no people, no cars, no text or signs with words.
+
+Output at 4x scale (1920 x 1280 pixels).

@@ -1,0 +1,5 @@
+Retro 16-bit pixel art for an arcade game. Hard black outlines, sharp clean pixels, no anti-aliasing, no blur, no text, no labels, no watermark. Use 3 to 4 shades per material, light from the upper left. Solid flat magenta background (#FF00FF) with no ground shadow.
+
+A sprite sheet of four small gemstones in a single row, each 8 x 8 pixels, evenly spaced on the magenta background: a clear white diamond with sparkles, a deep blue sapphire, a bright red ruby, and a green emerald. Each gem has a dark outline, a lighter facet highlight and one bright glint pixel.
+
+Output at 4x scale (32 x 32 pixels per gem, 128 x 32 overall).
