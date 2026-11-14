@@ -12,7 +12,7 @@ pico_set_program_version(blank_canvas "${PROJECT_VERSION}")
 
 # USB serial for stdio and the 1200-baud reboot into BOOTSEL
 pico_enable_stdio_usb(blank_canvas 1)
-pico_enable_stdio_uart(blank_canvas 0)
+# UART stdio is off: GP0 and GP1 are button inputs, and the 1200-baud reset uses USB serial
 
 # Produces blank_canvas.uf2 for drag-and-drop flashing
 pico_add_extra_outputs(blank_canvas)
