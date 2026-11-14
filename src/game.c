@@ -1,6 +1,6 @@
 // Reckalambo. Title screen, then Level 1: wreck the Urus with the hammer, sell it, dance.
 // Design notes are in docs/reckalambo_level1.md. The title picture comes from title_img.c
-// (made by tools/make_title_img.py). Everything else is drawn here with placeholder shapes.
+// (made by tools/make_title_img.py). The sprites come from the reck_*.c files.
 
 #include "game.h"
 
@@ -18,28 +18,46 @@
 // ---- Tuning ----------------------------------------------------------------------------
 
 #define BLINK_TICKS (GAME_TICK_HZ / 2)
-#define END_WAIT    30  // ticks before SET is accepted on the wreck and end screens
+#define END_WAIT    30  // ticks before SET is accepted on the end screen
 
-#define GROUND_Y   280  // the feet line of the jaguar and the bottom of the car
-#define MAN_SPEED  3
-#define MAN_MIN_Y  200
-#define MAN_MAX_Y  280
+#define GROUND_Y    280 // the bottom of the car, and the line the jaguar stands on
+#define CAR_W       RECK_CAR_W
+#define CAR_H       RECK_CAR_H
+#define CAR_Y       (GROUND_Y - CAR_H) // the car sprite is bottom-aligned on the ground
+#define CAR_MIN_X   12
+#define CAR_MAX_X   (GAME_W - CAR_W - 12)
+#define CAR_SPEED   2   // pixels per tick, about 60 a second
+#define CAR_FOOT_H  20  // the bottom part of the car that the jaguar cannot walk into
+#define CAR_HP_MAX  1500
+
+#define MAN_SPEED   3
+#define MAN_MIN_X   12
+#define MAN_MAX_X   (GAME_W - 12)
+#define MAN_MIN_Y   120 // feet, furthest back
+#define MAN_MAX_Y   300 // feet, furthest forward
+#define MAN_FOOT_W  12  // half the width of the jaguar's footprint
+#define MAN_FOOT_H  6   // the footprint is this tall, above his feet
 #define MAN_START_X 60
 #define MAN_START_Y 260
 
-#define CAR_X  296
-#define CAR_W  RECK_CAR_W
-#define CAR_H  RECK_CAR_H
-#define CAR_Y  (GROUND_Y - CAR_H) // the car sprite is bottom-aligned on the ground
-#define CAR_CX (CAR_X + CAR_W / 2)
-#define CAR_CY (CAR_Y + CAR_H / 2)
-#define MAN_MAX_X (CAR_X - 20) // he can stand at most this far right, so the head reaches the car
-#define CAR_HP_MAX 1500
+#define GRIP_DX -7 // the closed fist in the jaguar sprite, relative to his feet, facing right
+#define GRIP_DY -52
 
 #define SWING_TICKS  12
 #define IMPACT_TICK  6  // the hammer is at the car on this tick of the swing
-#define HIT_PAD      6  // the car's hit zone is this much bigger than the car on each side
-#define SALE_BONUS   500
+#define HIT_PAD      6  // the hit zone is this much bigger than the car on each side
+#define DEFLECT_FIRST 2 // the head can knock a gorilla away on any swing tick from here...
+#define DEFLECT_LAST  11 // ...to here, as it sweeps past
+#define DEFLECT_RADIUS 22 // how close the head must be to the gorilla's centre
+#define SALE_BONUS   500 // the base price of the wreck
+#define TIME_PAR_S   90  // a wreck faster than this gets a time bonus...
+#define TIME_PER_S   10  // ...of this much WRECK$ for each second under it
+#define BOUNCE_BONUS 150 // for each gorilla bounced back at the car, by the hammer or the shield
+#define SHIELD_DMG   100 // what a gorilla stopped by the shield does to the car
+
+#define SHIELD_TICKS    12 // a block lasts 0.4 s
+#define SHIELD_RECHARGE 90 // then the shield takes 3 s to recharge
+#define SPEED_WINDOW    90 // hits within 3 s of each other count as quick
 
 #define GORILLA_MAX   4
 #define GORILLA_FIRST 60 // ticks before the first gorilla
@@ -48,10 +66,10 @@
 #define GORILLA_HALF  12 // half the size of the gorilla hit box
 #define GORILLA_ANIM  4  // ticks per frame of the tumble
 #define GORILLA_SPEED 3.5f
+#define GORILLA_BACK  5.0f // speed of a gorilla knocked back at the car
 
-#define HITS_LIMIT   11 // the 11th hit restarts the level
+#define JAG_HITS     3  // the third gorilla hit restarts the level
 #define IMMUNE_TICKS 20 // no damage for this long after a gorilla hit
-#define DANCE_TICKS  120
 #define POPUP_TICKS  30
 
 // ---- Colours ---------------------------------------------------------------------------
@@ -60,49 +78,54 @@
 #define COL_GOLD    RGB565(255, 210, 40)
 #define COL_RED     RGB565(255, 60, 40)
 #define COL_GREEN   RGB565(60, 220, 90)
+#define COL_CYAN    RGB565(90, 230, 255)
 #define COL_SKY     RGB565(40, 16, 56)
 #define COL_ROAD    RGB565(58, 58, 66)
 #define COL_LINE    RGB565(200, 190, 60)
 #define COL_BUILD   RGB565(22, 22, 52)
-#define COL_CARBLK  RGB565(12, 12, 12)
-#define COL_CARYEL  RGB565(255, 210, 30)
-#define COL_GLASS   RGB565(70, 100, 140)
-#define COL_WHEEL   RGB565(40, 40, 40)
-#define COL_WRECK   RGB565(96, 96, 96)
-#define COL_SMOKE   RGB565(120, 120, 120)
 #define COL_BAR_BG  RGB565(40, 10, 10)
-#define COL_JAG     RGB565(235, 140, 40)
-#define COL_JAG_DK  RGB565(150, 80, 20)
-#define COL_SPOT    RGB565(20, 12, 8)
-#define COL_HEAD    RGB565(25, 18, 12)
-#define COL_EYE     RGB565(255, 40, 20)
-#define COL_HANDLE  RGB565(140, 90, 40)
-#define COL_HAM_G   RGB565(40, 200, 80)
-#define COL_HAM_R   RGB565(230, 40, 40)
+#define COL_SHIELD_BG RGB565(10, 30, 40)
 #define COL_GOR     RGB565(120, 70, 30)
 
 // ---- State -----------------------------------------------------------------------------
 
-enum { S_TITLE, S_PLAY, S_WRECKED, S_DANCE, S_DONE, S_LOST };
+enum { S_TITLE, S_PLAY, S_DONE, S_LOST };
+enum { G_FLYING, G_KNOCKED }; // a gorilla on its way to the jaguar, or knocked back at the car
 
 typedef struct {
     float x, y, vx, vy;
-    int life; // ticks left, 0 when the slot is free
+    int life;   // ticks left, 0 when the slot is free
+    int state;  // G_FLYING or G_KNOCKED
+    int damage; // knocked back: what it does to the car when it lands
 } Gorilla;
 
 static int state, ticks, state_t;
-static int man_x, man_y;
+static int car_x, car_dir;   // the car moves left and right
+static int man_x, man_y;     // feet
+static int facing = 1;       // +1 faces right, -1 faces left (towards the car)
 static int swing_t;          // 0 when not swinging, else 1..SWING_TICKS
 static int car_hp;
-static int points, money, hits, sold_for;
+static int wreck;            // WRECK$: the one currency, from hits, knocks and the sale
+static int hits, sold_for;
+static int bounces;         // gorillas bounced back at the car
+static int wreck_secs;      // how long the wreck took, in seconds
+static int sale_time, sale_bounce; // the parts of the sale bonus, for the end screen
 static int immune;           // ticks of no damage left
+static int shield_t, shield_cd; // the shield is up for shield_t ticks, then recharges for shield_cd
 static int gorilla_t;        // ticks since the level started, for firing
+static int last_hit_t;       // the tick of the last hit, for the speed bonus
 static int popup_t, popup_val;
+static uint32_t rng = 1;
 static Gorilla gor[GORILLA_MAX];
 
 // The strip being drawn right now. Everything is clipped to it.
 static uint16_t *strip;
 static int strip_y0, strip_rows;
+
+static int rnd_range(int lo, int hi) {
+    rng = rng * 1664525u + 1013904223u;
+    return lo + (int)((rng >> 8) % (uint32_t)(hi - lo + 1));
+}
 
 // ---- Drawing helpers -------------------------------------------------------------------
 
@@ -117,7 +140,7 @@ static void fill(int x, int y, int w, int h, uint16_t c) {
     }
 }
 
-// A thick line made of small squares. Good enough for arms and handles.
+// A thick line made of small squares.
 static void line(int x0, int y0, int x1, int y1, int thick, uint16_t c) {
     int dx = x1 - x0, dy = y1 - y0;
     int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
@@ -128,10 +151,13 @@ static void line(int x0, int y0, int x1, int y1, int thick, uint16_t c) {
     }
 }
 
+// The font has no dollar sign, so it is drawn here (columns, bit 0 at the top).
+static const uint8_t dollar_cols[5] = {0x24, 0x2A, 0x7F, 0x0A, 0x12};
+
 // Draws text in the 5x7 font, `scale` times bigger. Each character is 6 * scale wide.
 static void text(int x, int y, const char *s, uint16_t c, int scale) {
     for (; *s; s++, x += 6 * scale) {
-        const uint8_t *cols = font5x7_glyph(*s);
+        const uint8_t *cols = *s == '$' ? dollar_cols : font5x7_glyph(*s);
         for (int gx = 0; gx < 5; gx++)
             for (int gy = 0; gy < 7; gy++)
                 if ((cols[gx] >> gy) & 1) fill(x + gx * scale, y + gy * scale, scale, scale, c);
@@ -147,43 +173,54 @@ static void text_centred(int y, const char *s, uint16_t c, int scale) {
     text((GAME_W - text_width(s, scale)) / 2, y, s, c, scale);
 }
 
-// ---- Hammer ----------------------------------------------------------------------------
+// ---- Geometry --------------------------------------------------------------------------
 
-// Where the hammer head is on swing tick f (1..12), from the frame table. The grip is at
-// (man_x + GRIP_DX, man_y + GRIP_DY); the head offset is from the grip.
-#define GRIP_DX -7 // the closed fist in the jaguar sprite, relative to his feet
-#define GRIP_DY -52
-static void head_at(int f, int *dx, int *dy) {
-    *dx = GRIP_DX + reck_hammer_head[f - 1][0];
-    *dy = GRIP_DY + reck_hammer_head[f - 1][1];
+// The jaguar's hammer, relative to his feet and his facing: the grip, then the head on swing
+// tick f (1..12). The head offset in the frame table is for facing right, so it is mirrored
+// when he faces left.
+static void grip_at(int *gx, int *gy) {
+    *gx = man_x + facing * GRIP_DX;
+    *gy = man_y + GRIP_DY;
 }
 
-// Called on the impact tick. Scores the hit if the head is inside the car.
-static void impact(void) {
-    int dx, dy;
-    head_at(IMPACT_TICK, &dx, &dy);
-    int hx = man_x + dx, hy = man_y + dy;
-    int inside = hx >= CAR_X - HIT_PAD && hx <= CAR_X + CAR_W + HIT_PAD &&
-                 hy >= CAR_Y - HIT_PAD && hy <= CAR_Y + CAR_H + HIT_PAD;
-    if (!inside || car_hp <= 0) return; // a miss still counts as an attack, but scores nothing
+static void head_at(int f, int *hx, int *hy) {
+    int gx, gy;
+    grip_at(&gx, &gy);
+    *hx = gx + facing * reck_hammer_head[f - 1][0];
+    *hy = gy + reck_hammer_head[f - 1][1];
+}
 
-    // Quality: 100 when the head is at the centre of the car, 0 at the edge of the hit zone.
-    int dxn = abs(hx - CAR_CX) * 100 / (CAR_W / 2 + HIT_PAD);
-    int dyn = abs(hy - CAR_CY) * 100 / (CAR_H / 2 + HIT_PAD);
+static int car_cx(void) { return car_x + CAR_W / 2; }
+static int car_cy(void) { return CAR_Y + CAR_H / 2; }
+
+// The car's bottom strip and the jaguar's footprint: he cannot walk into the car.
+static int foot_hits_car(int mx, int my, int cx) {
+    return mx + MAN_FOOT_W > cx && mx - MAN_FOOT_W < cx + CAR_W &&
+           my > GROUND_Y - CAR_FOOT_H && my - MAN_FOOT_H < GROUND_Y;
+}
+
+// Hit quality: 100 at the centre of the box, 0 at its edge plus the padding.
+static int accuracy(int px, int py, int cx, int cy, int hw, int hh) {
+    int dxn = abs(px - cx) * 100 / (hw / 2 + HIT_PAD);
+    int dyn = abs(py - cy) * 100 / (hh / 2 + HIT_PAD);
     int d = dxn > dyn ? dxn : dyn;
     int q = 100 - d;
-    if (q < 0) q = 0;
-    int pts = 100 + 2 * q; // 100 to 300
+    return q < 0 ? 0 : q;
+}
 
-    points += pts;
-    car_hp -= pts;
-    popup_val = pts;
-    popup_t = POPUP_TICKS;
-    if (car_hp <= 0) {
-        car_hp = 0;
-        state = S_WRECKED;
-        state_t = 0;
-    }
+// ---- Scoring ---------------------------------------------------------------------------
+
+// A hit's worth, in WRECK$: 100 to 300. Accuracy is most of it. Speed adds the rest: a hit
+// that comes quickly after the last one scores more. A little luck is added on top.
+static int hit_score(int q) {
+    int since = ticks - last_hit_t;
+    if (since > SPEED_WINDOW) since = SPEED_WINDOW;
+    int speed = 100 - since * 100 / SPEED_WINDOW;
+    last_hit_t = ticks;
+    int s = 100 + (q * 120 + speed * 80) / 100 + rnd_range(-20, 20);
+    if (s < 100) s = 100;
+    if (s > 300) s = 300;
+    return s;
 }
 
 // ---- Level ------------------------------------------------------------------------------
@@ -192,26 +229,62 @@ static void start_level(void) {
     state = S_PLAY;
     state_t = 0;
     ticks = 0;
+    rng ^= 0x9E3779B9u; // a different run each time
+    car_x = 150;
+    car_dir = 1;
     man_x = MAN_START_X;
     man_y = MAN_START_Y;
+    facing = 1;
     swing_t = 0;
     car_hp = CAR_HP_MAX;
-    points = 0;
-    money = 0;
+    wreck = 0;
     hits = 0;
     sold_for = 0;
+    bounces = 0;
+    wreck_secs = 0;
+    sale_time = sale_bounce = 0;
     immune = 0;
+    shield_t = 0;
+    shield_cd = 0;
     gorilla_t = 0;
+    last_hit_t = -SPEED_WINDOW;
     popup_t = 0;
     memset(gor, 0, sizeof gor);
+}
+
+static void show_popup(int v) {
+    popup_val = v;
+    popup_t = POPUP_TICKS;
+}
+
+// The wreck is sold as soon as the car is destroyed. The sale bonus is the base price, plus a
+// time bonus for a quick wreck, plus a bounce bonus. Then the completion screen starts.
+static void complete_level(void) {
+    wreck_secs = ticks / GAME_TICK_HZ;
+    int short_by = TIME_PAR_S - wreck_secs;
+    sale_time = short_by > 0 ? short_by * TIME_PER_S : 0;
+    sale_bounce = bounces * BOUNCE_BONUS;
+    sold_for = SALE_BONUS + sale_time + sale_bounce;
+    wreck += sold_for;
+    state = S_DONE;
+    state_t = 0;
+}
+
+// The car takes damage. At zero it is wrecked and sold, and the level is complete.
+static void damage_car(int dmg) {
+    if (car_hp <= 0) return;
+    car_hp -= dmg;
+    if (car_hp <= 0) {
+        car_hp = 0;
+        complete_level();
+    }
 }
 
 static void fire_gorilla(void) {
     for (int i = 0; i < GORILLA_MAX; i++) {
         if (gor[i].life) continue;
-        float sx = CAR_X + 20, sy = CAR_Y + 10;
-        float tx = man_x, ty = man_y - 20;
-        float dx = tx - sx, dy = ty - sy;
+        float sx = car_cx(), sy = CAR_Y + 10;
+        float dx = man_x - sx, dy = (man_y - 20) - sy;
         float len = sqrtf(dx * dx + dy * dy);
         if (len < 1) len = 1;
         gor[i].x = sx;
@@ -219,8 +292,59 @@ static void fire_gorilla(void) {
         gor[i].vx = dx / len * GORILLA_SPEED;
         gor[i].vy = dy / len * GORILLA_SPEED;
         gor[i].life = GORILLA_LIFE;
+        gor[i].state = G_FLYING;
+        gor[i].damage = 0;
         return;
     }
+}
+
+// The hammer's head comes down on the car: a hit scores WRECK$ and does that much damage.
+static void impact_car(void) {
+    int hx, hy;
+    head_at(IMPACT_TICK, &hx, &hy);
+    int inside = hx >= car_x - HIT_PAD && hx <= car_x + CAR_W + HIT_PAD &&
+                 hy >= CAR_Y - HIT_PAD && hy <= CAR_Y + CAR_H + HIT_PAD;
+    if (!inside || car_hp <= 0) return; // a miss is still an attack, but scores nothing
+    int s = hit_score(accuracy(hx, hy, car_cx(), car_cy(), CAR_W, CAR_H));
+    wreck += s;
+    show_popup(s);
+    damage_car(s);
+}
+
+// Swing ticks around the impact: a gorilla in the head's path is knocked back at the car.
+static void check_deflect(void) {
+    int hx, hy;
+    head_at(swing_t, &hx, &hy);
+    for (int i = 0; i < GORILLA_MAX; i++) {
+        if (!gor[i].life || gor[i].state != G_FLYING) continue;
+        int gx = (int)gor[i].x, gy = (int)gor[i].y;
+        if (abs(hx - gx) > DEFLECT_RADIUS || abs(hy - gy) > DEFLECT_RADIUS) continue;
+        int s = hit_score(accuracy(hx, hy, gx, gy, 2 * GORILLA_HALF, 2 * GORILLA_HALF));
+        wreck += s;
+        show_popup(s);
+        // Knock it back at the middle of the car.
+        float dx = car_cx() - gx, dy = car_cy() - gy;
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len < 1) len = 1;
+        gor[i].vx = dx / len * GORILLA_BACK;
+        gor[i].vy = dy / len * GORILLA_BACK;
+        gor[i].state = G_KNOCKED;
+        gor[i].damage = s;
+        bounces++;
+        gor[i].life = 120;
+    }
+}
+
+// Walks the jaguar, one axis at a time, so he slides round the car instead of stopping dead.
+static void walk(int dx, int dy) {
+    int nx = man_x + dx;
+    if (nx < MAN_MIN_X) nx = MAN_MIN_X;
+    if (nx > MAN_MAX_X) nx = MAN_MAX_X;
+    if (!foot_hits_car(nx, man_y, car_x)) man_x = nx;
+    int ny = man_y + dy;
+    if (ny < MAN_MIN_Y) ny = MAN_MIN_Y;
+    if (ny > MAN_MAX_Y) ny = MAN_MAX_Y;
+    if (!foot_hits_car(man_x, ny, car_x)) man_y = ny;
 }
 
 // ---- Firmware entry points -------------------------------------------------------------
@@ -245,26 +369,40 @@ static void step(uint8_t held, uint8_t pressed) {
         return;
 
     case S_PLAY: {
-        // Walk in 8 directions, kept on the ground strip and left of the car.
+        // Walk in 8 directions, round the car.
         int dx = 0, dy = 0;
         if (held & JOY_LEFT) dx -= MAN_SPEED;
         if (held & JOY_RIGHT) dx += MAN_SPEED;
         if (held & JOY_UP) dy -= MAN_SPEED;
         if (held & JOY_DOWN) dy += MAN_SPEED;
-        man_x += dx;
-        man_y += dy;
-        if (man_x < 0) man_x = 0;
-        if (man_x > MAN_MAX_X) man_x = MAN_MAX_X;
-        if (man_y < MAN_MIN_Y) man_y = MAN_MIN_Y;
-        if (man_y > MAN_MAX_Y) man_y = MAN_MAX_Y;
+        walk(dx, dy);
+        facing = car_cx() >= man_x ? 1 : -1;
+
+        // The car drives left and right, and turns round at the ends or at the jaguar.
+        int nx = car_x + car_dir * CAR_SPEED;
+        if (nx < CAR_MIN_X || nx > CAR_MAX_X || foot_hits_car(man_x, man_y, nx)) {
+            car_dir = -car_dir;
+        } else {
+            car_x = nx;
+        }
+
+        // SET raises the shield if it is charged. It stays up for a short time, then recharges.
+        if (shield_cd) shield_cd--;
+        if (shield_t) shield_t--;
+        if ((pressed & JOY_SET) && shield_t == 0 && shield_cd == 0) {
+            shield_t = SHIELD_TICKS;
+            shield_cd = SHIELD_RECHARGE;
+        }
 
         // The swing. The impact is checked on its own tick, then the swing moves on.
         if (swing_t) {
-            if (swing_t == IMPACT_TICK) impact();
+            if (swing_t == IMPACT_TICK) impact_car();
+            if (state != S_PLAY) return; // the car is gone: the level is complete
+            if (swing_t >= DEFLECT_FIRST && swing_t <= DEFLECT_LAST) check_deflect();
             swing_t++;
             if (swing_t > SWING_TICKS) swing_t = 0;
         }
-        if ((pressed & JOY_MID) && swing_t == 0 && state == S_PLAY) swing_t = 1;
+        if ((pressed & JOY_MID) && swing_t == 0) swing_t = 1;
 
         // The car fires gorillas until it is wrecked.
         gorilla_t++;
@@ -276,17 +414,38 @@ static void step(uint8_t held, uint8_t pressed) {
             gor[i].x += gor[i].vx;
             gor[i].y += gor[i].vy;
             gor[i].life--;
-            // The jaguar's body is about 28 wide and 80 tall, feet at man_y.
             int gx = (int)gor[i].x, gy = (int)gor[i].y;
+
+            if (gor[i].state == G_KNOCKED) {
+                // It lands on the car: the damage it was scored for.
+                if (gx > car_x - GORILLA_HALF && gx < car_x + CAR_W + GORILLA_HALF &&
+                    gy > CAR_Y - GORILLA_HALF && gy < CAR_Y + CAR_H + GORILLA_HALF) {
+                    gor[i].life = 0;
+                    show_popup(gor[i].damage);
+                    damage_car(gor[i].damage);
+                    if (state != S_PLAY) return;
+                }
+                continue;
+            }
+
+            // A flying gorilla that reaches the jaguar.
             if (immune == 0 && gx > man_x - 14 - GORILLA_HALF && gx < man_x + 14 + GORILLA_HALF &&
                 gy > man_y - 80 - GORILLA_HALF && gy < man_y + GORILLA_HALF) {
-                hits++;
-                immune = IMMUNE_TICKS;
                 gor[i].life = 0;
-                if (hits >= HITS_LIMIT) {
-                    state = S_LOST;
-                    state_t = 0;
-                    return;
+                if (shield_t) {
+                    // Blocked: it bounces back onto the car, but the jaguar takes nothing.
+                    gor[i].life = 0;
+                    bounces++;
+                    damage_car(SHIELD_DMG);
+                    if (state != S_PLAY) return;
+                } else {
+                    hits++;
+                    immune = IMMUNE_TICKS;
+                    if (hits >= JAG_HITS) {
+                        state = S_LOST;
+                        state_t = 0;
+                        return;
+                    }
                 }
             }
         }
@@ -294,23 +453,6 @@ static void step(uint8_t held, uint8_t pressed) {
         if (popup_t) popup_t--;
         return;
     }
-
-    case S_WRECKED:
-        // The car is still on fire for a moment. Then SET sells it.
-        if (state_t >= END_WAIT && (pressed & JOY_SET)) {
-            sold_for = points + SALE_BONUS;
-            money = sold_for;
-            state = S_DANCE;
-            state_t = 0;
-        }
-        return;
-
-    case S_DANCE:
-        if (state_t >= DANCE_TICKS) {
-            state = S_DONE;
-            state_t = 0;
-        }
-        return;
 
     case S_DONE:
         if (state_t >= END_WAIT && (pressed & JOY_SET)) game_init();
@@ -349,7 +491,16 @@ static void mark_all(void) {
 }
 
 // Last values seen, so the HUD and the car are only marked when they change.
-static int mk_state = -1, mk_points = -1, mk_hits = -1, mk_car = -1;
+static int mk_state = -1, mk_wreck = -1, mk_hits = -1, mk_car = -1;
+
+// The jaguar, with his hammer, shield and recharge bar.
+static void mark_jaguar(void) { mark(man_x - 80, man_y - 120, man_x + 80, man_y + 14); }
+
+// Gorillas in the air. Their tumble animation changes every few ticks, so they are always marked.
+static void mark_gorillas(void) {
+    for (int i = 0; i < GORILLA_MAX; i++)
+        if (gor[i].life) mark((int)gor[i].x - 16, (int)gor[i].y - 16, (int)gor[i].x + 16, (int)gor[i].y + 16);
+}
 
 // Works out what to mark for this tick. Anything that is not the play screen is redrawn in
 // full: the transitions and the overlay screens are rare, so the cost is fine.
@@ -360,30 +511,22 @@ static void mark_for_tick(void) {
         // The picture is still; only the title and the blinking prompt move.
         mark(0, 10, GAME_W - 1, 50);
         mark(0, 280, GAME_W - 1, 310);
-    } else if (state == S_WRECKED) {
-        mark(0, 100, GAME_W - 1, 200);                                         // WRECKED! and the prompt
-        mark(man_x - 80, man_y - 150, man_x + 80, man_y + 10);               // the jaguar still blinks
-    } else if (state == S_DANCE) {
-        mark(man_x - 80, man_y - 150, man_x + 80, man_y + 10);               // the dance, hammer and sway
-        mark(0, 80, GAME_W - 1, 170);                                          // SOLD FOR
     } else if (state == S_DONE || state == S_LOST) {
         mark_all(); // these screens are mostly text and are not drawn often
     } else {
-        mark(man_x - 44, man_y - 106, man_x + 44, man_y + 4);                 // the jaguar
-        mark(man_x + GRIP_DX - 64, man_y + GRIP_DY - 64,
-             man_x + GRIP_DX + 64, man_y + GRIP_DY + 64);                    // the hammer
-        for (int i = 0; i < GORILLA_MAX; i++)
-            if (gor[i].life) mark((int)gor[i].x - 16, (int)gor[i].y - 16, (int)gor[i].x + 16, (int)gor[i].y + 16);
-        if (popup_t) mark(CAR_X + 14, CAR_Y - 40, CAR_X + 140, CAR_Y - 8);   // the points popup
-        if (car_hp != mk_car) mark(CAR_X - 2, CAR_Y - 14, CAR_X + CAR_W + 2, CAR_Y + CAR_H + 2);
-        if (points != mk_points || hits != mk_hits) mark(0, 0, GAME_W - 1, 23); // the HUD
+        mark_jaguar();
+        mark_gorillas();
+        if (popup_t) mark(car_x + 14, CAR_Y - 40, car_x + 140, CAR_Y - 8);   // the points popup
+        mark(car_x - 2, CAR_Y - 14, car_x + CAR_W + 2, CAR_Y + CAR_H + 2);   // the car moves every tick
+        if (wreck != mk_wreck || hits != mk_hits) mark(0, 0, GAME_W - 1, 23); // the HUD
     }
     mk_state = state;
-    mk_points = points;
+    mk_wreck = wreck;
     mk_hits = hits;
     mk_car = car_hp;
 }
 
+// The shield bar and the outline are part of the jaguar's marked area.
 void game_update(uint8_t held, uint8_t pressed) {
     step(held, pressed);
     mark_for_tick();
@@ -421,34 +564,34 @@ static void draw_background(void) {
     }
 }
 
-// Draws a sprite whose transparent pixels are RECK_KEY, clipped to the strip.
-static void blit(const uint16_t *spr, int w, int h, int x, int y) {
+// Draws a sprite whose transparent pixels are RECK_KEY, clipped to the strip. `flip` mirrors
+// it left to right, for facing left.
+static void blit_dir(const uint16_t *spr, int w, int h, int x, int y, int flip) {
     for (int yy = 0; yy < h; yy++) {
         int py = y + yy;
         if (py < strip_y0 || py >= strip_y0 + strip_rows) continue;
         for (int xx = 0; xx < w; xx++) {
-            uint16_t c = spr[yy * w + xx];
+            uint16_t c = spr[yy * w + (flip ? w - 1 - xx : xx)];
             int px = x + xx;
             if (c != RECK_KEY && px >= 0 && px < GAME_W) strip[(py - strip_y0) * GAME_W + px] = c;
         }
     }
 }
 
-static void draw_car(void) {
-    int wrecked = state != S_PLAY;
-    blit(wrecked ? reck_car_wreck : reck_car_intact, RECK_CAR_W, RECK_CAR_H, CAR_X, CAR_Y);
+static void blit(const uint16_t *spr, int w, int h, int x, int y) { blit_dir(spr, w, h, x, y, 0); }
 
-    if (!wrecked) {
-        // Cracks as the car takes damage, and the health bar above it.
-        int n = (CAR_HP_MAX - car_hp) * 8 / CAR_HP_MAX;
-        for (int i = 0; i < n; i++) {
-            int x = CAR_X + 40 + i * 12;
-            line(x, CAR_Y + 44, x + 6, CAR_Y + 60, 2, COL_TEXT);
-        }
-        fill(CAR_X, CAR_Y - 12, CAR_W, 6, COL_BAR_BG);
-        int w = car_hp * CAR_W / CAR_HP_MAX;
-        fill(CAR_X, CAR_Y - 12, w, 6, car_hp > CAR_HP_MAX / 2 ? COL_GREEN : COL_RED);
+static void draw_car(void) {
+    blit(reck_car_intact, RECK_CAR_W, RECK_CAR_H, car_x, CAR_Y);
+
+    // Cracks as the car takes damage, and the health bar above it.
+    int n = (CAR_HP_MAX - car_hp) * 8 / CAR_HP_MAX;
+    for (int i = 0; i < n; i++) {
+        int x = car_x + 40 + i * 12;
+        line(x, CAR_Y + 44, x + 6, CAR_Y + 60, 2, COL_TEXT);
     }
+    fill(car_x, CAR_Y - 12, CAR_W, 6, COL_BAR_BG);
+    int w = car_hp * CAR_W / CAR_HP_MAX;
+    fill(car_x, CAR_Y - 12, w, 6, car_hp > CAR_HP_MAX / 2 ? COL_GREEN : COL_RED);
 }
 
 static void draw_gorillas(void) {
@@ -460,49 +603,60 @@ static void draw_gorillas(void) {
     }
 }
 
-// The jaguar. The sprite already holds his hammer, so the strike is not drawn yet: the
-// hammer's hit box still follows head_at(). `dance` sways him from side to side.
+// The jaguar, his hammer, the shield and the shield's recharge bar. `dance` sways him.
 static void draw_man(int mx, int my, int dance) {
     int sway = dance ? (((state_t / 8) & 1) ? -8 : 8) : 0;
     int x = mx + sway;
-    blit(reck_jaguar, RECK_JAG_W, RECK_JAG_H, x - RECK_JAG_W / 2, my - RECK_JAG_H);
+    int flip = facing < 0;
+    blit_dir(reck_jaguar, RECK_JAG_W, RECK_JAG_H, x - RECK_JAG_W / 2, my - RECK_JAG_H, flip);
 
     // The hammer: frame 1 when at rest (raised behind), else the frame for this swing tick.
     int f = swing_t ? swing_t : 1;
-    int gx = x + GRIP_DX, gy = my + GRIP_DY;
-    blit(reck_hammer[f - 1], RECK_HAMMER_W, RECK_HAMMER_W, gx - RECK_HAMMER_PIVOT, gy - RECK_HAMMER_PIVOT);
+    int gx = x + facing * GRIP_DX, gy = my + GRIP_DY;
+    blit_dir(reck_hammer[f - 1], RECK_HAMMER_W, RECK_HAMMER_W, gx - RECK_HAMMER_PIVOT,
+             gy - RECK_HAMMER_PIVOT, flip);
+
+    if (!dance) {
+        if (shield_t) {
+            // The shield: a cyan outline round the jaguar while it is up.
+            fill(x - 22, my - 96, 44, 2, COL_CYAN);
+            fill(x - 22, my - 2, 44, 2, COL_CYAN);
+            fill(x - 22, my - 96, 2, 94, COL_CYAN);
+            fill(x + 20, my - 96, 2, 94, COL_CYAN);
+        }
+        // The recharge bar above his head: full when the shield is ready.
+        int ready = SHIELD_RECHARGE - shield_cd;
+        fill(x - 14, my - 104, 28, 4, COL_SHIELD_BG);
+        fill(x - 14, my - 104, ready * 28 / SHIELD_RECHARGE, 4, shield_cd ? COL_GOLD : COL_CYAN);
+    }
 }
 
 static void draw_hud(void) {
     fill(0, 0, GAME_W, 22, RGB565(12, 4, 14));
     fill(0, 22, GAME_W, 2, COL_GOLD);
     char buf[32];
-    snprintf(buf, sizeof buf, "POINTS %d", points);
+    snprintf(buf, sizeof buf, "WRECK$ %d", wreck);
     text(8, 7, buf, COL_TEXT, 2);
-    snprintf(buf, sizeof buf, "HITS %d/%d", hits, HITS_LIMIT - 1);
-    text(GAME_W - text_width(buf, 2) - 8, 7, buf, hits >= HITS_LIMIT - 2 ? COL_RED : COL_TEXT, 2);
+    snprintf(buf, sizeof buf, "HITS %d/%d", hits, JAG_HITS);
+    text(GAME_W - text_width(buf, 2) - 8, 7, buf, hits >= JAG_HITS - 1 ? COL_RED : COL_TEXT, 2);
 }
 
 static void draw_play(void) {
     draw_background();
-    draw_car();
     draw_gorillas();
 
-    // The jaguar blinks while he can't be hurt.
-    if (!(immune && ((ticks / 3) & 1))) draw_man(man_x, man_y, 0);
+    // The jaguar is drawn behind the car when he is further back in depth, else in front.
+    int behind = man_y - MAN_FOOT_H < GROUND_Y - CAR_FOOT_H;
+    if (behind && !(immune && ((ticks / 3) & 1))) draw_man(man_x, man_y, 0);
+    draw_car();
+    if (!behind && !(immune && ((ticks / 3) & 1))) draw_man(man_x, man_y, 0);
 
     if (popup_t) {
         char buf[16];
         snprintf(buf, sizeof buf, "+%d", popup_val);
-        text(CAR_X + 20, CAR_Y - 34, buf, COL_GOLD, 3);
+        text(car_x + 20, CAR_Y - 34, buf, COL_GOLD, 3);
     }
     draw_hud();
-
-    if (state == S_WRECKED) {
-        text_centred(120, "WRECKED!", COL_GOLD, 4);
-        if (state_t >= END_WAIT && (ticks / BLINK_TICKS) % 2 == 0)
-            text_centred(170, "SET: SELL", COL_TEXT, 2);
-    }
 }
 
 void game_draw(uint16_t *buf, int y0, int rows) {
@@ -517,28 +671,21 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         return;
     }
 
-    if (state == S_DANCE) {
-        draw_background();
-        draw_car();
-        draw_man(man_x, man_y, 1);
-        draw_hud();
-        text_centred(90, "SOLD", COL_GOLD, 5);
-        char buf2[32];
-        snprintf(buf2, sizeof buf2, "FOR $%d", sold_for);
-        text_centred(150, buf2, COL_TEXT, 3);
-        return;
-    }
-
     if (state == S_DONE) {
         draw_background();
+        draw_man(70, 300, 1); // the jaguar, swaying with the hammer up, on the left of the text
         text_centred(40, "LEVEL 1", COL_GOLD, 4);
         text_centred(80, "COMPLETE", COL_GOLD, 4);
         char buf2[32];
-        snprintf(buf2, sizeof buf2, "POINTS %d", points);
+        snprintf(buf2, sizeof buf2, "TIME %d S", wreck_secs);
+        text_centred(128, buf2, COL_TEXT, 2);
+        snprintf(buf2, sizeof buf2, "BOUNCED %d", bounces);
         text_centred(150, buf2, COL_TEXT, 2);
-        snprintf(buf2, sizeof buf2, "MONEY $%d", money);
-        text_centred(180, buf2, COL_TEXT, 2);
-        if ((ticks / BLINK_TICKS) % 2 == 0) text_centred(240, "SET: TITLE", COL_GOLD, 2);
+        snprintf(buf2, sizeof buf2, "SALE +%d", sold_for);
+        text_centred(172, buf2, COL_GOLD, 2);
+        snprintf(buf2, sizeof buf2, "TOTAL WRECK$ %d", wreck);
+        text_centred(198, buf2, COL_GOLD, 2);
+        if ((ticks / BLINK_TICKS) % 2 == 0) text_centred(250, "SET: TITLE", COL_GOLD, 2);
         return;
     }
 
