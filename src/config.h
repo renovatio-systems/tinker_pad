@@ -27,7 +27,7 @@
 #define PIN_JOY_RIGHT 15
 #define PIN_JOY_MID   14 // centre button
 #define PIN_JOY_SET   0  // SET button
-#define PIN_JOY_RESET 1  // software restart of the game (the stick's own RST button resets the MCU)
+#define PIN_JOY_RESET 8  // software restart of the game (the stick's own RST button resets the MCU)
 
 // The ILI9488 takes 18-bit pixels over SPI, so the panel is slow: 15 MHz keeps the wiring
 // reliable. Raise it only if the picture is clean.
