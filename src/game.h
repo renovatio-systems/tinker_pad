@@ -10,6 +10,7 @@
 #define GAME_H       ILI9488_HEIGHT // 320 pixels down
 #define GAME_TICK_HZ 30             // game logic runs this many times a second
 #define GAME_STRIP_ROWS 8           // the frame is drawn 8 rows at a time, to save RAM
+#define GAME_TILE_W 16              // a strip is cut into tiles this wide, for the dirty tiles
 
 // The only functions the rest of the firmware calls. Edit game.c to build your game.
 void game_init(void);
@@ -23,5 +24,10 @@ void game_update(uint8_t held, uint8_t pressed);
 // row by row. Anything outside those rows is clipped away, so the game draws every
 // strip in turn with the same code.
 void game_draw(uint16_t *buf, int y0, int rows);
+
+// For each strip (strip s covers rows s * GAME_STRIP_ROWS and on), a bitmask of the tiles that
+// may have changed since the last tick: bit t is columns t * GAME_TILE_W and on. Call it once
+// per tick, after game_update(). Tiles with the bit clear are the same as last time.
+const uint32_t *game_dirty_tiles(void);
 
 #endif

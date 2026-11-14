@@ -1,5 +1,5 @@
-// Blank canvas: each tick, game.c updates from the buttons and draws the frame in
-// strips. Only the strips that changed are packed and sent to the panel.
+// Each tick, game.c updates and draws the frame in strips. Only the tiles that changed are
+// packed and sent to the panel.
 //
 // Hold MID while powering on to show the display diagnostic instead of the game.
 // Use it to check the wiring and the panel settings in config.h.
@@ -17,10 +17,20 @@
 
 #define STRIPS (GAME_H / GAME_STRIP_ROWS)
 #define STRIP_PIXELS (GAME_W * GAME_STRIP_ROWS)
+#define TILE_W 16                // a strip is cut into tiles this wide, and only changed tiles are sent
+#define TILES (GAME_W / TILE_W)
 
-static uint16_t strip_rgb[STRIP_PIXELS];                 // the strip being drawn
-static uint8_t packed[2][STRIP_PIXELS * ILI9488_BYTES_PER_PIXEL]; // two buffers for DMA
-static uint32_t strip_sum[STRIPS];                       // checksum of each strip last sent
+// Set to 1 to print the frame rate, the time spent drawing and updating, and the tiles sent,
+// once a second, over USB serial.
+#define FPS_REPORT 0
+
+static uint16_t strip_rgb[STRIP_PIXELS] __attribute__((aligned(4))); // the strip being drawn
+static uint8_t packed[2][STRIP_PIXELS * ILI9488_BYTES_PER_PIXEL];   // two buffers for DMA
+static uint32_t tile_sum[STRIPS][TILES];                             // checksum of each tile last sent
+static uint32_t tiles_sent;                                          // tiles sent since the last report
+#if FPS_REPORT
+static uint64_t t_game, t_sum, t_send;                              // where the frame time goes
+#endif
 
 static ili9488_config_t display_config(void) {
     return (ili9488_config_t){
@@ -36,31 +46,73 @@ static ili9488_config_t display_config(void) {
     };
 }
 
-// FNV-1a over a strip's pixels: a cheap change detector, so unchanged strips aren't sent.
-static uint32_t checksum(const uint16_t *p, int n) {
-    const uint8_t *b = (const uint8_t *)p;
+// FNV-style hash of one tile (TILE_W x GAME_STRIP_ROWS pixels, two pixels at a time): a cheap
+// change detector, so unchanged tiles aren't sent.
+static uint32_t tile_checksum(const uint16_t *strip, int tile) {
     uint32_t h = 2166136261u;
-    for (int i = 0; i < n * 2; i++) h = (h ^ b[i]) * 16777619u;
+    for (int r = 0; r < GAME_STRIP_ROWS; r++) {
+        const uint32_t *w = (const uint32_t *)(strip + r * GAME_W + tile * TILE_W);
+        for (int i = 0; i < TILE_W / 2; i++) h = (h ^ w[i]) * 16777619u;
+    }
     return h;
 }
 
-// Draws the whole frame strip by strip. A strip is sent only if its checksum changed
-// since the last frame, or if it's the first frame.
+// Draws the frame strip by strip. Each tile is checked against the last one sent, and only the
+// changed tiles are packed and sent. A run of changed tiles is sent as one block; a single
+// unchanged tile between two changed ones is sent too, which is cheaper than another command.
+// Everything is sent on the first frame.
 static void draw_frame(bool first) {
     int cur = 0;
+    const uint32_t *dirty = game_dirty_tiles();
     for (int s = 0; s < STRIPS; s++) {
+        uint32_t mask = first ? (1u << TILES) - 1 : dirty[s];
+        if (!mask) continue; // nothing in this strip can have changed
         int y0 = s * GAME_STRIP_ROWS;
+#if FPS_REPORT
+        uint64_t a = time_us_64();
+#endif
         game_draw(strip_rgb, y0, GAME_STRIP_ROWS);
+#if FPS_REPORT
+        uint64_t b = time_us_64();
+        t_game += b - a;
+#endif
 
-        uint32_t sum = checksum(strip_rgb, STRIP_PIXELS);
-        if (!first && sum == strip_sum[s]) continue;
-        strip_sum[s] = sum;
+        bool changed[TILES];
+        for (int t = 0; t < TILES; t++) {
+            changed[t] = false;
+            if (!((mask >> t) & 1)) continue;
+            uint32_t sum = tile_checksum(strip_rgb, t);
+            changed[t] = first || sum != tile_sum[s][t];
+            tile_sum[s][t] = sum;
+        }
+#if FPS_REPORT
+        t_sum += time_us_64() - b;
+#endif
 
-        // Pack into the buffer the previous DMA transfer is not reading.
-        for (int i = 0; i < STRIP_PIXELS; i++)
-            ili9488_pack(strip_rgb[i], &packed[cur][i * ILI9488_BYTES_PER_PIXEL]);
-        ili9488_blit_dma(0, y0, GAME_W, GAME_STRIP_ROWS, packed[cur]);
-        cur ^= 1;
+        for (int t = 0; t < TILES; t++) {
+            if (!changed[t]) continue;
+            int end = t;
+            for (int u = t + 1; u < TILES && u <= end + 2; u++)
+                if (changed[u]) end = u;
+            int w = (end - t + 1) * TILE_W;
+
+            // Pack into the buffer the previous DMA transfer is not reading.
+            for (int r = 0; r < GAME_STRIP_ROWS; r++) {
+                const uint16_t *src = strip_rgb + r * GAME_W + t * TILE_W;
+                uint8_t *dst = &packed[cur][r * w * ILI9488_BYTES_PER_PIXEL];
+                for (int i = 0; i < w; i++) ili9488_pack(src[i], &dst[i * ILI9488_BYTES_PER_PIXEL]);
+            }
+#if FPS_REPORT
+            uint64_t c = time_us_64();
+#endif
+            ili9488_blit_dma(t * TILE_W, y0, w, GAME_STRIP_ROWS, packed[cur]);
+#if FPS_REPORT
+            t_send += time_us_64() - c;
+#endif
+            cur ^= 1;
+            tiles_sent += (uint32_t)(end - t + 1);
+            t = end;
+        }
     }
 }
 
@@ -115,15 +167,42 @@ int main(void) {
     // Fixed timestep on an absolute grid. After a long stall the grid is re-anchored.
     const uint64_t tick_us = 1000000 / GAME_TICK_HZ;
     uint64_t next_tick = time_us_64();
+#if FPS_REPORT
+    uint64_t report_at = next_tick + 1000000, draw_us = 0, update_us = 0;
+    uint32_t frames = 0;
+#endif
     while (true) {
         uint64_t now = time_us_64();
         input_poll((uint32_t)(now / 1000));
 
         if (now >= next_tick) {
+#if FPS_REPORT
+            uint64_t t0 = time_us_64();
+#endif
             game_update(input_held(), input_pressed());
+#if FPS_REPORT
+            uint64_t t1 = time_us_64();
+#endif
             next_tick += tick_us;
             if (now >= next_tick) next_tick = now + tick_us;
             draw_frame(false);
+#if FPS_REPORT
+            draw_us += time_us_64() - t1;
+            update_us += t1 - t0;
+            frames++;
+            if (time_us_64() >= report_at) {
+                printf("fps %lu  update %lu  draw+send %lu  | game_draw %lu  checksum %lu  dma-call %lu  (us/frame)  tiles/frame %lu\n",
+                       (unsigned long)frames, (unsigned long)(update_us / frames),
+                       (unsigned long)(draw_us / frames), (unsigned long)(t_game / frames),
+                       (unsigned long)(t_sum / frames), (unsigned long)(t_send / frames),
+                       (unsigned long)(tiles_sent / frames));
+                frames = 0;
+                draw_us = update_us = 0;
+                t_game = t_sum = t_send = 0;
+                tiles_sent = 0;
+                report_at += 1000000;
+            }
+#endif
         }
     }
 }

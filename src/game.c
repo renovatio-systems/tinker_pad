@@ -110,8 +110,11 @@ static void fill(int x, int y, int w, int h, uint16_t c) {
     int x0 = x < 0 ? 0 : x, x1 = x + w > GAME_W ? GAME_W : x + w;
     int y0 = y < strip_y0 ? strip_y0 : y;
     int y1 = y + h > strip_y0 + strip_rows ? strip_y0 + strip_rows : y + h;
-    for (int yy = y0; yy < y1; yy++)
-        for (int xx = x0; xx < x1; xx++) strip[(yy - strip_y0) * GAME_W + xx] = c;
+    if (x0 >= x1) return;
+    for (int yy = y0; yy < y1; yy++) {
+        uint16_t *p = strip + (yy - strip_y0) * GAME_W + x0;
+        for (int n = x1 - x0; n > 0; n--) *p++ = c;
+    }
 }
 
 // A thick line made of small squares. Good enough for arms and handles.
@@ -228,7 +231,7 @@ void game_init(void) {
     ticks = 0;
 }
 
-void game_update(uint8_t held, uint8_t pressed) {
+static void step(uint8_t held, uint8_t pressed) {
     if (pressed & JOY_RESET) {
         game_init();
         return;
@@ -319,18 +322,103 @@ void game_update(uint8_t held, uint8_t pressed) {
     }
 }
 
+// ---- Dirty tiles -----------------------------------------------------------------------
+// The frame is cut into 16-pixel tiles, in strips 8 rows high. Each tick the game marks the
+// areas that may have changed. main.c only redraws and checks the marked tiles. The areas
+// the marks cover this tick and last tick are both reported, so nothing is left behind.
+
+#define DT_STRIPS (GAME_H / GAME_STRIP_ROWS)
+#define DT_TILES  (GAME_W / GAME_TILE_W)
+#define DT_ALL    ((1u << DT_TILES) - 1)
+
+static uint32_t dt_now[DT_STRIPS], dt_prev[DT_STRIPS], dt_out[DT_STRIPS];
+
+static void mark(int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > GAME_W - 1) x1 = GAME_W - 1;
+    if (y1 > GAME_H - 1) y1 = GAME_H - 1;
+    if (x0 > x1 || y0 > y1) return;
+    uint32_t m = 0;
+    for (int t = x0 / GAME_TILE_W; t <= x1 / GAME_TILE_W; t++) m |= 1u << t;
+    for (int s = y0 / GAME_STRIP_ROWS; s <= y1 / GAME_STRIP_ROWS; s++) dt_now[s] |= m;
+}
+
+static void mark_all(void) {
+    for (int s = 0; s < DT_STRIPS; s++) dt_now[s] = DT_ALL;
+}
+
+// Last values seen, so the HUD and the car are only marked when they change.
+static int mk_state = -1, mk_points = -1, mk_hits = -1, mk_car = -1;
+
+// Works out what to mark for this tick. Anything that is not the play screen is redrawn in
+// full: the transitions and the overlay screens are rare, so the cost is fine.
+static void mark_for_tick(void) {
+    if (state != mk_state) {
+        mark_all(); // a change of screen: everything is new
+    } else if (state == S_TITLE) {
+        // The picture is still; only the title and the blinking prompt move.
+        mark(0, 10, GAME_W - 1, 50);
+        mark(0, 280, GAME_W - 1, 310);
+    } else if (state == S_WRECKED) {
+        mark(0, 100, GAME_W - 1, 200);                                         // WRECKED! and the prompt
+        mark(man_x - 80, man_y - 150, man_x + 80, man_y + 10);               // the jaguar still blinks
+    } else if (state == S_DANCE) {
+        mark(man_x - 80, man_y - 150, man_x + 80, man_y + 10);               // the dance, hammer and sway
+        mark(0, 80, GAME_W - 1, 170);                                          // SOLD FOR
+    } else if (state == S_DONE || state == S_LOST) {
+        mark_all(); // these screens are mostly text and are not drawn often
+    } else {
+        mark(man_x - 44, man_y - 106, man_x + 44, man_y + 4);                 // the jaguar
+        mark(man_x + GRIP_DX - 64, man_y + GRIP_DY - 64,
+             man_x + GRIP_DX + 64, man_y + GRIP_DY + 64);                    // the hammer
+        for (int i = 0; i < GORILLA_MAX; i++)
+            if (gor[i].life) mark((int)gor[i].x - 16, (int)gor[i].y - 16, (int)gor[i].x + 16, (int)gor[i].y + 16);
+        if (popup_t) mark(CAR_X + 14, CAR_Y - 40, CAR_X + 140, CAR_Y - 8);   // the points popup
+        if (car_hp != mk_car) mark(CAR_X - 2, CAR_Y - 14, CAR_X + CAR_W + 2, CAR_Y + CAR_H + 2);
+        if (points != mk_points || hits != mk_hits) mark(0, 0, GAME_W - 1, 23); // the HUD
+    }
+    mk_state = state;
+    mk_points = points;
+    mk_hits = hits;
+    mk_car = car_hp;
+}
+
+void game_update(uint8_t held, uint8_t pressed) {
+    step(held, pressed);
+    mark_for_tick();
+}
+
+const uint32_t *game_dirty_tiles(void) {
+    for (int s = 0; s < DT_STRIPS; s++) {
+        dt_out[s] = dt_now[s] | dt_prev[s];
+        dt_prev[s] = dt_now[s];
+        dt_now[s] = 0;
+    }
+    return dt_out;
+}
+
 // ---- Drawing ---------------------------------------------------------------------------
 
+// The background is the same every tick, so it is drawn one row at a time: sky above the
+// road, a row of buildings standing on the road line, and the road with its white line.
 static void draw_background(void) {
-    fill(0, 0, GAME_W, GROUND_Y, COL_SKY);
-    // A row of simple buildings. Heights and positions are fixed.
     static const struct { int x, w, h; } b[] = {
         {0, 60, 130}, {70, 44, 96}, {124, 70, 150}, {210, 40, 86},
         {260, 56, 120}, {330, 64, 160}, {404, 76, 110},
     };
-    for (unsigned i = 0; i < sizeof b / sizeof b[0]; i++) fill(b[i].x, GROUND_Y - b[i].h, b[i].w, b[i].h, COL_BUILD);
-    fill(0, GROUND_Y, GAME_W, GAME_H - GROUND_Y, COL_ROAD);
-    fill(0, GROUND_Y + 10, GAME_W, 2, COL_LINE);
+    for (int r = 0; r < strip_rows; r++) {
+        int y = strip_y0 + r;
+        uint16_t *row = strip + r * GAME_W;
+        uint16_t c = y < GROUND_Y ? COL_SKY : COL_ROAD;
+        if (y == GROUND_Y + 10 || y == GROUND_Y + 11) c = COL_LINE;
+        for (int x = 0; x < GAME_W; x++) row[x] = c;
+        if (y < GROUND_Y) {
+            for (unsigned i = 0; i < sizeof b / sizeof b[0]; i++)
+                if (y >= GROUND_Y - b[i].h)
+                    for (int x = b[i].x; x < b[i].x + b[i].w && x < GAME_W; x++) row[x] = COL_BUILD;
+        }
+    }
 }
 
 // Draws a sprite whose transparent pixels are RECK_KEY, clipped to the strip.
