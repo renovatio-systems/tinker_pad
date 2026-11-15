@@ -75,3 +75,24 @@ The firmware uses these defaults from the ILI9488 driver. Run the diagnostic fir
 
 The stick runs from USB. The display takes its supply from the 3V3 pin. Check the
 module's current draw, including the backlight, before adding anything else to the 3V3 rail.
+
+## RP2350 USB board
+
+The RP2350 version of the stick has the same shape and the same edge pins as the RP2040 one,
+so the display and joystick wiring above doesn't change. The differences are below.
+
+| Part | Details |
+|---|---|
+| MCU | **RP2350A** (QFN-60), dual core, 520 KB SRAM, 12 MHz crystal |
+| Flash | The product sheet says 4 MB. The schematic shows a **W25Q128JV** (16 MB). Check the chip on your board. |
+| RGB LED | **WS2812B-0807** (`LE1`) on **GP22**. The RP2040 stick has no LED. |
+| Size | 17.5 × 38.0 mm, 4.8 g, USB-A plug |
+
+![RP2350 USB board pinout](images/rp2350_pinout.jpg)
+
+![RP2350 USB board description](images/rp2350_desc.jpg)
+
+![RP2350 USB board schematic](images/rp2350_schematics.png)
+
+The firmware picks the LED pin with `PICO_RP2350` (see [`src/config.h`](../src/config.h)):
+GP22 on RP2350, none on RP2040. `tinker_pad.sh` builds for `pico2` by default.
