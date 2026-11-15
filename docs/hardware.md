@@ -38,12 +38,8 @@ has the signal pins below. Check the labels on your module against this table.
 | SDI (MOSI) | SPI data into the panel | GP3 |
 | SCK | SPI clock | GP2 |
 | SDO (MISO) | SPI data out (status reads only) | GP4 |
-| LED / BL | Backlight | GND for always on, or GP8 with `PIN_BL 8` |
 
 The module's touch pins and SD card header aren't used.
-
-BL: on this module the backlight is on when BL is tied to 3V3. If your module lights
-only when BL is grounded, wire it to GND instead and keep `PIN_BL -1`.
 
 ## Joystick
 
