@@ -30,8 +30,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: blank_canvas
+          name: tinker_pad
           path: |
-            build/src/blank_canvas.uf2
-            build/src/blank_canvas.elf
+            build/src/tinker_pad.uf2
+            build/src/tinker_pad.elf
 
