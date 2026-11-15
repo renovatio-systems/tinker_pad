@@ -86,12 +86,6 @@ There is no gameplay here. After Level 3 is won, you can continue to five story 
 picture each with a line of narration, followed by a closing message. Then you return to the
 title.
 
-## Display diagnostic
-
-Hold **MID** while you power the board on. The screen shows red, green and blue bands with a
-white border, then solid colours. Use this to check the wiring and the panel settings in
-`src/config.h`.
-
 ## Building
 
 You need:
