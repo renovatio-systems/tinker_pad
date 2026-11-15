@@ -12,6 +12,7 @@ pico_set_program_version(tinker_pad "${PROJECT_VERSION}")
 
 # USB serial for stdio and the 1200-baud reboot into BOOTSEL
 pico_enable_stdio_usb(tinker_pad 1)
+# UART stdio is off: GP0 and GP1 are button inputs, and the 1200-baud reset uses USB serial
 pico_enable_stdio_uart(tinker_pad 0)
 
 # Produces tinker_pad.uf2 for drag-and-drop flashing
