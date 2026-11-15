@@ -57,7 +57,7 @@ Seven buttons, each switching its GPIO to GND (see [`src/config.h`](../src/confi
 | RIGHT | GP15 |
 | MID (centre) | GP14 |
 | SET | GP0 |
-| RESET | GP1 |
+| RESET | GP8 |
 
 ## Settings to check on the panel
 
@@ -67,7 +67,7 @@ The firmware uses these defaults from the ILI9488 driver. Run the diagnostic fir
 - **Orientation and colour order** (`ILI9488_MADCTL` in `lib/ili9488/include/ili9488.h`,
   currently 0x28, landscape BGR). Mirrored or upside-down output: try 0xE8. Swapped red
   and blue: clear the BGR bit (0x08).
-- **SPI clock** (`SPI_BAUD` in `src/config.h`, 15 MHz). Lower it if the picture is noisy.
+- **SPI clock** (`SPI_BAUD` in `src/config.h`, 20 MHz). Drop it to 15 MHz if the picture is noisy.
 - **Frame rate.** A full frame is 460 KB, so the firmware sends only the strips that
   changed. Fast-moving pictures will still update at a few frames a second.
 
