@@ -30,13 +30,13 @@ You need CMake ≥ 3.13, the ARM GCC toolchain and the Pico SDK (2.x; tested wit
 ```sh
 export PICO_SDK_PATH=/path/to/pico-sdk
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j       # -> build/src/blank_canvas.uf2
+cmake --build build -j       # -> build/src/tinker_pad.uf2
 ```
 
 ## Flashing
 
-Hold **BOOT** while plugging the stick in, then copy `build/src/blank_canvas.uf2`
-to the `RPI-RP2` drive. Or use `picotool load -x build/src/blank_canvas.uf2`.
+Hold **BOOT** while plugging the stick in, then copy `build/src/tinker_pad.uf2`
+to the `RPI-RP2` drive. Or use `picotool load -x build/src/tinker_pad.uf2`.
 
 ## Display diagnostic
 

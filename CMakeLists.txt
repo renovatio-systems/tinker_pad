@@ -8,7 +8,7 @@ set(PICO_BOARD rp2040_usb_stick CACHE STRING "Pico SDK board")
 # Must come before project()
 include(cmake/pico_sdk_import.cmake)
 
-project(blank_canvas VERSION 1.0.0 LANGUAGES C CXX ASM)
+project(tinker_pad VERSION 1.0.0 LANGUAGES C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
