@@ -7,7 +7,7 @@ target_link_libraries(tinker_pad PRIVATE ili9488 font5x7 pico_stdlib hardware_pi
 target_compile_options(tinker_pad PRIVATE -Wall)
 
 pico_set_program_name(tinker_pad "tinker_pad")
-pico_set_program_description(tinker_pad "Blank canvas for a 76x284 ST7789 and RP2040 USB stick")
+pico_set_program_description(tinker_pad "Tinker Pad for a 3.5 inch ILI9488 and RP2040 USB stick")
 pico_set_program_version(tinker_pad "${PROJECT_VERSION}")
 
 # USB serial for stdio and the 1200-baud reboot into BOOTSEL

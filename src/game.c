@@ -1,4 +1,4 @@
-// The blank canvas. Everything on screen comes from game_draw(), and everything
+// Tinker Pad demo. Everything on screen comes from game_draw(), and everything
 // that changes comes from game_update(). Start by changing the text, the colours
 // or the speed, then add your own variables and drawing.
 

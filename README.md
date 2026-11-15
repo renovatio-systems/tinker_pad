@@ -4,11 +4,11 @@ A starter kit for a microcontroller game or gadget. It runs on an RP2040 or RP23
 with a 3.5" ILI9488 display (480 × 320, landscape) and a 5-button joystick. The code is C with the
 Raspberry Pi Pico SDK. There is no sound hardware and no operating system.
 
-Out of the box it runs a small demo, the blank canvas: a title, a box you move with the joystick,
+Out of the box it runs a small demo: a title, a box you move with the joystick,
 and a button legend that lights up while you hold each button. Replace `src/game.c` with your own
 game. `agent_jatayu` is a full game built on this kit.
 
-## Controls (blank canvas demo)
+## Controls (demo)
 
 | Button | Action |
 |---|---|
