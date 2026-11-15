@@ -1,4 +1,4 @@
-// Blank canvas: each tick, game.c updates from the buttons and draws the frame in
+// Tinker Pad: each tick, game.c updates from the buttons and draws the frame in
 // strips. Only the strips that changed are packed and sent to the panel.
 //
 // Hold MID while powering on to show the display diagnostic instead of the game.
