@@ -2,7 +2,7 @@
 
 A Ramayana arcade game for the 480 x 320 ILI9488 display on the RP2040 USB stick. Jatayu
 fights three Rakshasas with his magical golden claws. The title picture and the hero sprite
-come from `jatayu.png`.
+are stored in `src/` as RGB565 arrays.
 
 ## Controls
 
@@ -39,13 +39,10 @@ of `src/game.c`.
 
 ## Artwork
 
-`src/assets.c` and `src/assets.h` are generated. To rebuild them from `jatayu.png`:
-
-```sh
-python3 -I tools/gen_assets.py path/to/jatayu.png [preview.png]
-```
-
-Needs Python with Pillow, NumPy and SciPy.
+All artwork is compiled in from generated C arrays: `src/assets.c`, `src/jatayu_img.c`,
+`src/l2_sprites.c`, `src/l3_assets.c`, `src/l4_cutscenes.c` and `src/l_labels.c`. The
+converter scripts and source PNGs are no longer in this branch, so edit the arrays directly
+or restore the tools from git history (`git log -- tools/`) if you need to regenerate them.
 
 ## Display speed
 
