@@ -121,7 +121,8 @@ cmake --build build -j
 ```
 
 The output is `build/src/tinker_pad.uf2` (and `tinker_pad.elf`). The CMake default board is
-`rp2040_usb_stick`. Pass `-DPICO_BOARD=pico` for a standard Pico.
+`pico2` (RP2350). Pass `-DPICO_BOARD=rp2040_usb_stick` for the RP2040 USB stick, or
+`-DPICO_BOARD=pico` for a standard Pico.
 
 ## Flashing
 
