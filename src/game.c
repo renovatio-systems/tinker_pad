@@ -28,7 +28,7 @@
 
 // ---- Layout ----------------------------------------------------------------
 
-#define GROUND_Y   224                  // top of the ground strip; feet stand here
+#define GROUND_Y   296                  // top of the earth strip; feet stand here (24 px of earth below)
 #define HUD_BAND   44                   // dark band behind the HUD
 #define HERO_DRAW  60                   // Jimmy Bob is drawn 60 px tall
 #define HERO_SPEED 5
@@ -87,12 +87,12 @@ typedef struct {
 
 static const surface_t surfaces[] = {
     {0, 480, GROUND_Y},  // the ground
-    {30, 118, 184},
-    {150, 238, 136},
-    {300, 388, 184},
-    {380, 468, 112},
-    {20, 108, 88},
-    {250, 338, 80},
+    {30, 118, 256},
+    {150, 238, 208},
+    {300, 388, 256},
+    {380, 468, 184},
+    {20, 108, 160},
+    {250, 338, 152},
 };
 #define N_SURFACES (sizeof surfaces / sizeof surfaces[0])
 
@@ -241,10 +241,12 @@ static void text_right(int xr, int y, const char *s, uint16_t c, int scale) {
 // The full-screen jungle, dimmed so the characters stand out. Copied row by row.
 // A black sky with a stepped yellow pyramid, drawn in code. Its base sits on the ground.
 #define PYR_TOP  60
-#define PYR_TIER 27
+#define PYR_TIER 39
 #define COL_PYR  RGB565(206, 150, 30)
 #define COL_PYR_EDGE RGB565(250, 210, 80)
 #define COL_PYR_SHADE RGB565(120, 80, 10)
+#define COL_EARTH RGB565(74, 46, 14)
+#define COL_EARTH_JOINT RGB565(40, 24, 6)
 
 static void background(void) {
     fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
@@ -254,6 +256,13 @@ static void background(void) {
         uint16_t c = (y - PYR_TOP) % PYR_TIER == 0 ? COL_PYR_EDGE : COL_PYR;
         fill(GAME_W / 2 - half, y, 2 * half, 1, c);
         fill(GAME_W / 2 + half - 3, y, 3, 1, COL_PYR_SHADE);
+    }
+    // The ground: a band of earth with stone joints, from the ground line to the bottom.
+    for (int y = imax(strip_y0, GROUND_Y + 2); y < strip_y0 + strip_rows; y++) {
+        int row = (y - GROUND_Y - 2) / 16;                   // which course of stones
+        fill(0, y, GAME_W, 1, COL_EARTH);
+        if ((y - GROUND_Y - 2) % 16 == 0) fill(0, y, GAME_W, 1, COL_EARTH_JOINT);
+        for (int x = (row & 1) * 24; x < GAME_W; x += 48) fill(x, y, 2, 1, COL_EARTH_JOINT);
     }
     // The ground line the characters stand on.
     if (GROUND_Y >= strip_y0 && GROUND_Y < strip_y0 + strip_rows) fill(0, GROUND_Y, GAME_W, 2, COL_PYR_EDGE);
