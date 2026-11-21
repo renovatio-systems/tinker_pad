@@ -1,9 +1,9 @@
-add_executable(tinker_pad main.c game.c ninja_art.c input.c led.c)
+add_executable(tinker_pad main.c game.c ninja_art.c shop_art.c wallet.c input.c led.c)
 
 pico_generate_pio_header(tinker_pad ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 
 target_include_directories(tinker_pad PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(tinker_pad PRIVATE ili9488 font5x7 pico_stdlib hardware_pio)
+target_link_libraries(tinker_pad PRIVATE ili9488 font5x7 pico_stdlib pico_flash hardware_flash hardware_pio)
 target_compile_options(tinker_pad PRIVATE -Wall)
 
 pico_set_program_name(tinker_pad "tinker_pad")

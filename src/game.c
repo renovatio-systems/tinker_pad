@@ -6,11 +6,18 @@
 //   Title:   SET starts.
 //   Playing: LEFT / RIGHT walk, UP jumps, MID attacks with the weapon in hand,
 //            SET switches between the crossbow and the samurai sword.
-//            RST restarts from the title.
+//            RST asks "reset the game?": RST again resets, SET goes back to the game.
 //   Out of hearts: SET tries the level again (coins are kept).
+//   Shop:    only the arrows and MID. UP/DOWN pick the character, LEFT/RIGHT the armour,
+//            MID buys or wears it. The back arrow (UP from the top row) leaves with MID.
+//   Wallet:  coins and bought armour are saved in flash and survive power-off and RST.
+//            Only flashing new firmware erases them.
 //   Win:     SET goes back to the title.
 //
-// Scoring: 10 coins per skeleton or ghost, 100 for the Mega Boss.
+// Coins: skeleton 5, ghost 10, Mega Boss 200. Every 5th kill in a row without losing a
+// heart is +10. Finishing a level pays 10 x the level number, +20 if no heart was lost, and
+// an accuracy bonus (crossbow bolts and sword swings that hit): 90% +30, 75% +20, 50% +10
+// (needs at least 5 shots). The level-clear screen shows all of it; SET carries on.
 // Danger: skeletons swing their swords when close, ghosts touch you, and the
 // Mega Boss shoots snake poison darts. Five hearts; you are safe for a moment
 // after each hit.
@@ -25,6 +32,8 @@
 
 #include "font5x7.h"
 #include "ninja_art.h"
+#include "shop_art.h"
+#include "wallet.h"
 
 // ---- Layout ----------------------------------------------------------------
 
@@ -50,7 +59,15 @@
 #define BOSS_Y     (GROUND_Y - BOSS_DRAW)
 #define MAX_ENEMY  24
 #define MAX_PROJ   24
-#define BANNER_TICKS 90
+#define BANNER_MIN_TICKS 30             // the level-clear screen ignores SET for this long
+#define COIN_SKELETON 5
+#define COIN_GHOST    10
+#define COIN_BOSS     200
+#define STREAK_EVERY  5                 // every 5th kill in a row without losing a heart...
+#define STREAK_BONUS  10                // ...pays this much
+#define LEVEL_BONUS_PER_LEVEL 10        // finishing level n pays 10 x n
+#define PERFECT_BONUS 20                // no heart lost this level
+#define ACC_MIN_SHOTS 5                 // fewer shots than this and there is no accuracy bonus
 #define BOLT_SPEED 12                   // crossbow bolt, pixels per tick
 
 // Friends are drawn 56 px. The eagle hovers at EAGLE_Y; the banana and the devil
@@ -79,7 +96,7 @@
 
 // ---- Types -----------------------------------------------------------------
 
-typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN, ST_FLOOR, ST_SHOP } state_t;
+typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN, ST_SHOP } state_t;
 typedef enum { K_SKELETON, K_GHOST, K_BOSS } kind_t;
 typedef enum { W_CROSSBOW, W_SWORD } weapon_t;
 typedef enum { PJ_BOLT, PJ_PEEL, PJ_POO, PJ_DART } proj_kind_t;
@@ -148,22 +165,33 @@ static int eagle_x, eagle_y;
 static buddy_t banana, devil;
 static int laser_x0, laser_y0, laser_x1, laser_y1;
 static int banner_timer, boss_timer;
+
+// This level's coin and accuracy tally (cleared by start_level), and the level-clear sums.
+static int lv_skel, lv_ghost;       // kills this level
+static int lv_streak, lv_streak_coins; // kills in a row without losing a heart, coins paid for them
+static int lv_lost_heart;           // 1 once a heart is lost this level
+static int lv_shots, lv_hits;       // bolts fired and swings made, and how many hit
+static int swing_scored;            // this swing has already counted as a hit
+static int sum_level, sum_perfect, sum_acc_pct, sum_acc_bonus, sum_total; // sum_acc_pct is -1 if too few shots
 static int ticks;
+static int confirm_reset;        // RST was pressed: waiting for RST (reset) or SET (back to the game)
 
 static uint32_t rng = 4242;
 
-// The armour shop. Nine items: eight cards, and the ultimate showcase (index 8).
-#define N_ARMOUR 9
-static const int armour_price[N_ARMOUR] = {0, 25, 50, 100, 200, 400, 800, 1600, 25600};
-static const int armour_def[N_ARMOUR] = {1, 2, 3, 5, 8, 10, 15, 25, 1800};   // blocks this % of hits, up to 50
-static const int armour_lives[N_ARMOUR] = {5, 5, 6, 7, 9, 10, 12, 15, 900};  // hit points
+// The armour shop: five tiers for each of four characters. Starter is free and worn from the start.
+#define N_ARMOUR 5
+static const int armour_price[N_ARMOUR] = {0, 100, 300, 800, 2000};
+static const int armour_def[N_ARMOUR] = {1, 3, 8, 25, 100};   // blocks this % of hits, up to 50
+static const int armour_lives[N_ARMOUR] = {5, 6, 10, 20, 50}; // hit points
+static const char *const armour_name[N_ARMOUR] = {"STARTER", "NINJA", "ROYAL", "LEGENDARY", "ULTIMATE"};
 // Characters with armour: 0 Jimmy Bob, 1 banana, 2 golden eagle, 3 Tasmanian devil.
 #define N_SHOPS 4
-static uint16_t owned_armour[N_SHOPS];  // bit i set: item i is bought
-static int equipped[N_SHOPS];           // the item each one is wearing
-static int shop_kind;                   // which shop is open
-static int floor_cursor;                // which shop the floor screen points at
-static int shop_cursor, shop_next, shop_from_title, shop_msg_t;
+static const char *const character_name[N_SHOPS] = {"JIMMY BOB", "BANANA", "GOLDEN EAGLE", "TASMANIAN DEVIL"};
+static uint16_t owned_armour[N_SHOPS];  // bit i set: tier i is bought
+static int equipped[N_SHOPS];           // the tier each one is wearing
+static int shop_row, shop_col;          // the cursor: character row 0-3 and tier column 0-4
+static int shop_on_back;                // the cursor is on the back arrow
+static int shop_next, shop_from_title;
 
 // The strip being drawn right now. Everything is clipped to it.
 static uint16_t *strip;
@@ -242,13 +270,17 @@ static void line(int x0, int y0, int x1, int y1, uint16_t c) {
 }
 
 // Text in the 5x7 font, `scale` times bigger. Each character is 6 * scale wide.
-static void text(int x, int y, const char *s, uint16_t c, int scale) {
-    for (; *s; s++, x += 6 * scale) {
+static void text_adv(int x, int y, const char *s, uint16_t c, int scale, int advance) {
+    for (; *s; s++, x += advance) {
         const uint8_t *cols = font5x7_glyph(*s);
         for (int gx = 0; gx < 5; gx++)
             for (int gy = 0; gy < 7; gy++)
                 if ((cols[gx] >> gy) & 1) fill(x + gx * scale, y + gy * scale, scale, scale, c);
     }
+}
+
+static void text(int x, int y, const char *s, uint16_t c, int scale) {
+    text_adv(x, y, s, c, scale, 6 * scale);
 }
 
 static int text_width(const char *s, int scale) {
@@ -610,6 +642,11 @@ static int spawn_sk_speed, spawn_gh_speed;
 
 static void start_level(int n) {
     level = n;
+    lv_skel = lv_ghost = 0;
+    lv_streak = lv_streak_coins = 0;
+    lv_lost_heart = 0;
+    lv_shots = lv_hits = 0;
+    swing_scored = 0;
     n_enemies = 0;
     spawn_next = 0;
     spawn_timer = 30;
@@ -670,11 +707,72 @@ static void update_spawns(void) {
     spawn_timer = 40;
 }
 
+// ---- Wallet ----------------------------------------------------------------
+// Coins and bought armour live in flash (wallet.c) and survive power-off and RST.
+// Only flashing new firmware wipes them. Saving stalls the CPU for a few milliseconds, so
+// during a fight it waits until the coins have been still for a moment; between fights
+// (shops, level end, death, RST) it saves straight away.
+
+#define WALLET_QUIET_TICKS 45          // 1.5 seconds without a change, while playing
+_Static_assert(N_SHOPS == WALLET_ITEMS, "wallet holds one armour set per character");
+
+static wallet_t saved_wallet;          // what is in flash now
+static wallet_t seen_wallet;           // the last state we looked at
+static int wallet_seen_tick;           // when it last changed
+
+static void wallet_snapshot(wallet_t *w) {
+    memset(w, 0, sizeof *w);
+    w->coins = coins;
+    for (int k = 0; k < N_SHOPS; k++) {
+        w->owned[k] = owned_armour[k];
+        w->equipped[k] = (uint8_t)equipped[k];
+    }
+}
+
+// Takes a saved wallet, or the starting wallet if there is none or it looks wrong.
+static void wallet_apply(const wallet_t *w, int valid) {
+    coins = 0;
+    for (int k = 0; k < N_SHOPS; k++) {
+        owned_armour[k] = 1;   // the starter armour
+        equipped[k] = 0;
+    }
+    if (!valid) return;
+    coins = w->coins < 0 ? 0 : w->coins;
+    for (int k = 0; k < N_SHOPS; k++) {
+        uint16_t own = (uint16_t)((w->owned[k] & ((1u << N_ARMOUR) - 1)) | 1u);
+        owned_armour[k] = own;
+        if (w->equipped[k] < N_ARMOUR && (own & (1u << w->equipped[k]))) equipped[k] = w->equipped[k];
+    }
+}
+
+static void wallet_commit(int force) {
+    wallet_t cur;
+    wallet_snapshot(&cur);
+    if (memcmp(&cur, &seen_wallet, sizeof cur) != 0) {
+        seen_wallet = cur;
+        wallet_seen_tick = ticks;
+    }
+    if (memcmp(&cur, &saved_wallet, sizeof cur) == 0) return;
+    if (!force && state == ST_PLAY && ticks - wallet_seen_tick < WALLET_QUIET_TICKS) return;
+    printf("wallet: saving %d coins... ", (int)cur.coins);
+    int ok = wallet_save(&cur);
+    printf("%s\n", ok ? "ok" : "FAILED");
+    saved_wallet = cur;   // on failure, try again only after the next change
+}
+
 void game_init(void) {
+    confirm_reset = 0;
+    wallet_commit(1);   // keep anything not saved yet
+    wallet_t w;
+    int have = wallet_load(&w);
+    wallet_apply(&w, have);
+    wallet_snapshot(&saved_wallet);
+    seen_wallet = saved_wallet;
+    printf("wallet: %s, %d coins\n", have ? "loaded" : "empty", coins);
+
     make_stars();
     state = ST_TITLE;
     level = 1;
-    coins = 0;
     weapon = W_CROSSBOW;
     hero_hp = armour_lives[equipped[0]];
     hero_inv = 0;
@@ -686,12 +784,6 @@ void game_init(void) {
     clear_projs();
     banner_timer = 0;
     boss_timer = 0;
-    for (int k = 0; k < N_SHOPS; k++) {
-        owned_armour[k] = 1;   // the starter armour
-        equipped[k] = 0;
-    }
-    shop_kind = 0;
-    shop_msg_t = 0;
 }
 
 // ---- Update ----------------------------------------------------------------
@@ -701,6 +793,8 @@ static void hit_hero(void) {
     int block = imin(50, armour_def[equipped[0]]);
     if (rnd(100) < block) return;   // the armour takes this one
     hero_hp--;
+    lv_lost_heart = 1;
+    lv_streak = 0;
     hero_inv = HURT_TICKS;
     if (hero_hp <= 0) {
         hero_hp = 0;
@@ -734,22 +828,30 @@ static void enemy_size(const enemy_t *e, int *w, int *h) {
     *h = s;
 }
 
-// Hurts an enemy. Killing a skeleton or ghost gives 10 coins; the boss, 100.
-static void damage_enemy(int i) {
+// Hurts an enemy. Returns 1 if it took the hit (a hidden ghost cannot be hurt).
+// Kills pay: skeleton 5, ghost 10, the Mega Boss 200. Every 5th kill in a row without
+// losing a heart pays a streak bonus.
+static int damage_enemy(int i) {
     enemy_t *e = &enemies[i];
-    if (!e->alive) return;
-    if (e->kind == K_GHOST && e->vis_t >= GHOST_VIS) return; // a hidden ghost cannot be hurt
+    if (!e->alive) return 0;
+    if (e->kind == K_GHOST && e->vis_t >= GHOST_VIS) return 0; // a hidden ghost cannot be hurt
     e->hp--;
-    if (e->hp > 0) return;
+    if (e->hp > 0) return 1;
     e->alive = 0;
     if (e->kind == K_BOSS) {
-        coins += 100;
+        coins += COIN_BOSS;
         state = ST_BOSS_DOWN;
         boss_timer = 0;
         clear_projs();
     } else {
-        coins += 10;
+        if (e->kind == K_GHOST) { coins += COIN_GHOST; lv_ghost++; }
+        else { coins += COIN_SKELETON; lv_skel++; }
+        if (++lv_streak % STREAK_EVERY == 0) {
+            coins += STREAK_BONUS;
+            lv_streak_coins += STREAK_BONUS;
+        }
     }
+    return 1;
 }
 
 // The nearest visible enemy to the hero, or -1.
@@ -904,7 +1006,7 @@ static void update_projs(void) {
             enemy_hit_box(e, &hx0, &hy0, &w, &h);
             if (px >= hx0 && px < hx0 + w && py >= hy0 && py < hy0 + h) {
                 p->on = 0;
-                damage_enemy(k);
+                if (damage_enemy(k) && p->kind == PJ_BOLT) lv_hits++;   // only Jimmy Bob's bolts count
                 break;
             }
         }
@@ -956,7 +1058,10 @@ static void sword_hits(void) {
         enemy_hit_box(e, &bx, &by, &w, &h);
         if (overlap(x0, hy + 8, 46, 48, bx, by, w, h)) {
             swing_mask |= 1u << i;
-            damage_enemy(i);
+            if (damage_enemy(i) && !swing_scored) {   // a swing counts once, however many it hits
+                swing_scored = 1;
+                lv_hits++;
+            }
             if (state != ST_PLAY) return;
         }
     }
@@ -1043,6 +1148,23 @@ static void update_friends(void) {
     }
 }
 
+// Every skeleton and ghost is down: pay the level bonuses and show the tally.
+static void level_clear(void) {
+    sum_level = LEVEL_BONUS_PER_LEVEL * level;
+    sum_perfect = lv_lost_heart ? 0 : PERFECT_BONUS;
+    sum_acc_pct = -1;
+    sum_acc_bonus = 0;
+    if (lv_shots >= ACC_MIN_SHOTS) {
+        sum_acc_pct = lv_hits * 100 / lv_shots;
+        sum_acc_bonus = sum_acc_pct >= 90 ? 30 : sum_acc_pct >= 75 ? 20 : sum_acc_pct >= 50 ? 10 : 0;
+    }
+    sum_total = lv_skel * COIN_SKELETON + lv_ghost * COIN_GHOST + lv_streak_coins
+              + sum_level + sum_perfect + sum_acc_bonus;
+    coins += sum_level + sum_perfect + sum_acc_bonus;   // the kills and streaks are already in
+    banner_timer = 0;
+    state = ST_BANNER;
+}
+
 static void update_play(uint8_t held, uint8_t pressed) {
     // Walk.
     if (held & JOY_LEFT) { hx -= HERO_SPEED; facing = -1; }
@@ -1068,6 +1190,8 @@ static void update_play(uint8_t held, uint8_t pressed) {
         swing_t = 12;
         swing_cool = 16;
         swing_mask = 0;
+        swing_scored = 0;
+        lv_shots++;
         attack_pending = 0;
         sword_hits();
     }
@@ -1086,6 +1210,7 @@ static void update_play(uint8_t held, uint8_t pressed) {
         }
         if (bolt_cool == 0 && shoot(PJ_BOLT, sx, sy, tx, ty, BOLT_SPEED)) {
             bolt_cool = 8;
+            lv_shots++;
             attack_pending = 0;
         }
     }
@@ -1106,8 +1231,7 @@ static void update_play(uint8_t held, uint8_t pressed) {
 
     // Level clear: every skeleton and ghost is down.
     if (level < BOSS_LEVEL && spawn_next >= spawn_n && alive_targets() == 0) {
-        state = ST_BANNER;
-        banner_timer = BANNER_TICKS;
+        level_clear();
     }
 }
 
@@ -1126,93 +1250,58 @@ static void update_boss_down(void) {
 }
 
 // ---- Shop ------------------------------------------------------------------
-
-// The layout of each shop picture (480 x 320): the four card columns, two rows of cards, and
-// the showcase on the right (index 8). Rows: y and height.
-typedef struct {
-    int xs[4], w;
-    int row_y[2], row_h[2];
-    int showcase_x, showcase_y, showcase_w, showcase_h;
-} shop_layout_t;
-
-static const shop_layout_t layouts[N_SHOPS] = {
-    {{35, 92, 149, 206}, 54, {72, 170}, {94, 100}, 265, 30, 187, 250},   // Jimmy Bob
-    {{35, 96, 156, 217}, 57, {70, 165}, {90, 88}, 292, 66, 160, 200},   // banana
-    {{37, 102, 166, 230}, 58, {95, 175}, {75, 73}, 295, 70, 145, 125},  // golden eagle
-    {{35, 100, 160, 222}, 55, {65, 155}, {85, 95}, 295, 100, 155, 130}, // devil
-};
-
-// Where each shop's card is. Index 8 is the showcase.
-static void shop_rect(int kind, int idx, int *x, int *y, int *w, int *h) {
-    const shop_layout_t *L = &layouts[kind];
-    if (idx == 8) {
-        *x = L->showcase_x; *y = L->showcase_y; *w = L->showcase_w; *h = L->showcase_h;
-        return;
-    }
-    int col = idx % 4, row = idx / 4;
-    *x = L->xs[col];
-    *y = L->row_y[row];
-    *w = L->w;
-    *h = L->row_h[row];
-}
-
-// Floor screen: the four shop cards along the bottom of the picture.
-static void floor_rect(int i, int *x, int *y, int *w, int *h) {
-    static const int fx[4] = {0, 118, 244, 373};
-    static const int fw[4] = {111, 121, 120, 107};
-    *x = fx[i]; *y = 88; *w = fw[i]; *h = 185;
-}
+// One screen (shop_art.c, from shop.png): a row for each character, five armour tiers across.
+// Only the arrows and MID work here. The cursor can sit on any armour or on the back arrow in
+// the top-left corner; MID on an armour buys or wears it, MID on the back arrow leaves.
 
 static void open_shop(int next, int from_title) {
     shop_next = next;
     shop_from_title = from_title;
-    floor_cursor = shop_kind;
-    shop_msg_t = 0;
-    state = ST_FLOOR;
+    shop_row = 0;
+    shop_col = equipped[0];
+    shop_on_back = 0;
+    state = ST_SHOP;
 }
 
+// Back arrow: to the title if the shop was opened from there, otherwise on to the next level.
 static void close_shop(void) {
     if (shop_from_title) state = ST_TITLE;
     else start_level(shop_next);
 }
 
-static void floor_move(uint8_t pressed) {
-    if ((pressed & JOY_LEFT) && floor_cursor > 0) floor_cursor--;
-    if ((pressed & JOY_RIGHT) && floor_cursor < N_SHOPS - 1) floor_cursor++;
-}
-
 static void shop_move(uint8_t pressed) {
-    int idx = shop_cursor, col = idx % 4, row = idx / 4;
-    if (idx == 8) {
-        if (pressed & JOY_LEFT) idx = 7;
-    } else {
-        if ((pressed & JOY_LEFT) && col > 0) idx--;
-        if ((pressed & JOY_RIGHT) && col == 3) idx = 8;
-        else if ((pressed & JOY_RIGHT)) idx++;
-        if ((pressed & JOY_UP) && row == 1) idx -= 4;
-        if ((pressed & JOY_DOWN) && row == 0) idx += 4;
+    if (shop_on_back) {
+        if (pressed & JOY_DOWN) shop_on_back = 0;
+        return;
     }
-    shop_cursor = idx;
+    if ((pressed & JOY_LEFT) && shop_col > 0) shop_col--;
+    if ((pressed & JOY_RIGHT) && shop_col < N_ARMOUR - 1) shop_col++;
+    if (pressed & JOY_DOWN) { if (shop_row < N_SHOPS - 1) shop_row++; }
+    if (pressed & JOY_UP) { if (shop_row > 0) shop_row--; else shop_on_back = 1; }
 }
 
-// Buys the item under the cursor, or wears it if it is already bought.
+// Buys the armour under the cursor, or wears it if it is already bought. Never charges twice.
 static void shop_buy(void) {
-    int i = shop_cursor, k = shop_kind;
+    int i = shop_col, k = shop_row;
     if (owned_armour[k] & (1u << i)) {
         equipped[k] = i;
     } else if (coins >= armour_price[i]) {
         coins -= armour_price[i];
         owned_armour[k] |= (uint16_t)(1u << i);
         equipped[k] = i;
-    } else {
-        shop_msg_t = 60;
-    }
+    }   // otherwise the button already says NOT ENOUGH COINS: nothing happens
 }
 
 void game_update(uint8_t held, uint8_t pressed) {
     ticks++;
-    if (pressed & JOY_RESET) {
-        game_init();
+    if (confirm_reset) {
+        // The game is paused. RST again resets as usual; SET goes back to the game.
+        if (pressed & JOY_RESET) game_init();
+        else if (pressed & JOY_SET) confirm_reset = 0;
+        return;
+    }
+    if ((pressed & JOY_RESET) && state != ST_SHOP) {   // RST and SET do nothing in the shop
+        confirm_reset = 1;
         return;
     }
     switch (state) {
@@ -1224,7 +1313,8 @@ void game_update(uint8_t held, uint8_t pressed) {
         update_play(held, pressed);
         break;
     case ST_BANNER:
-        if (--banner_timer <= 0) open_shop(level + 1, 0);  // the shop opens after every level
+        banner_timer++;   // SET carries on to the shop, after a moment so nobody skips it by accident
+        if (banner_timer > BANNER_MIN_TICKS && (pressed & JOY_SET)) open_shop(level + 1, 0);
         break;
     case ST_DEAD:
         if (pressed & JOY_SET) start_level(level); // try again, coins kept
@@ -1235,22 +1325,15 @@ void game_update(uint8_t held, uint8_t pressed) {
     case ST_WIN:
         if (pressed & JOY_SET) game_init();
         break;
-    case ST_FLOOR:
-        floor_move(pressed);
-        if (pressed & JOY_SET) {
-            shop_kind = floor_cursor;
-            shop_cursor = equipped[shop_kind];
-            state = ST_SHOP;
-        }
-        if (pressed & JOY_MID) close_shop();
-        break;
     case ST_SHOP:
         shop_move(pressed);
-        if (shop_msg_t > 0) shop_msg_t--;
-        if (pressed & JOY_SET) shop_buy();
-        if (pressed & JOY_MID) state = ST_FLOOR;   // back to the floor screen
+        if (pressed & JOY_MID) {
+            if (shop_on_back) close_shop();
+            else shop_buy();
+        }
         break;
     }
+    wallet_commit(0);
 }
 
 // ---- Draw ------------------------------------------------------------------
@@ -1278,7 +1361,7 @@ static void draw_hud(void) {
     char buf[32];
     fill(0, 0, GAME_W, HUD_BAND, COL_BAND);
     int max_hp = armour_lives[equipped[0]];
-    if (max_hp <= 10) {
+    if (max_hp <= 6) {   // more hearts would run into the title: show a number instead
         for (int i = 0; i < max_hp; i++) {
             if (i < hero_hp) spr(nj_heart, NJ_HEART_W, NJ_HEART_H, 8 + i * 26, 10, 22, 22, 0);
             else fill(8 + i * 26, 10, 22, 22, COL_HEAD_OFF);
@@ -1297,14 +1380,26 @@ static void draw_hud(void) {
     text_centred(26, weapon == W_CROSSBOW ? "CROSSBOW" : "SWORD", COL_DIM, 2);
 }
 
+// The 140 x 140 picture of a character wearing a tier. Starter is the original art; the other
+// tiers come from the shop picture.
+static const uint16_t *armour_sprite(int kind, int tier) {
+    if (tier > 0) return shop_sprite[kind][tier];
+    switch (kind) {
+    case 0: return nj_jimmy_bob;
+    case 1: return nj_yellow_banana;
+    case 2: return nj_golden_eagle;
+    default: return nj_tasmanian_devil;
+    }
+}
+
 // The eagle, the banana and the devil, standing by Jimmy Bob's side.
 static void draw_friends(void) {
     if (side_eagle)
-        spr(nj_golden_eagle, NJ_GOLDEN_EAGLE_W, NJ_GOLDEN_EAGLE_H, eagle_x, eagle_y, FRIEND_DRAW, FRIEND_DRAW, 0);
+        spr(armour_sprite(2, equipped[2]), 140, 140, eagle_x, eagle_y, FRIEND_DRAW, FRIEND_DRAW, 0);
     if (side_banana)
-        spr(nj_yellow_banana, NJ_YELLOW_BANANA_W, NJ_YELLOW_BANANA_H, banana.x, banana.y, FRIEND_DRAW, FRIEND_DRAW, 0);
+        spr(armour_sprite(1, equipped[1]), 140, 140, banana.x, banana.y, FRIEND_DRAW, FRIEND_DRAW, 0);
     if (side_devil)
-        spr(nj_tasmanian_devil, NJ_TASMANIAN_DEVIL_W, NJ_TASMANIAN_DEVIL_H, devil.x, devil.y, FRIEND_DRAW, FRIEND_DRAW, 0);
+        spr(armour_sprite(3, equipped[3]), 140, 140, devil.x, devil.y, FRIEND_DRAW, FRIEND_DRAW, 0);
 }
 
 // A health bar above an enemy's head: red when low, green when healthy.
@@ -1363,71 +1458,156 @@ static void draw_laser(void) {
 static void draw_hero(void) {
     if (hero_inv && ((hero_inv >> 2) & 1)) return; // blink after a hit
     // Jimmy Bob with the weapon in hand; the other one is on his back in the same picture.
-    if (weapon == W_CROSSBOW)
-        spr(nj_jimmy_crossbow, NJ_JIMMY_CROSSBOW_W, NJ_JIMMY_CROSSBOW_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
-    else
-        spr(nj_jimmy_sword, NJ_JIMMY_SWORD_W, NJ_JIMMY_SWORD_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+    if (equipped[0] == 0) {
+        if (weapon == W_CROSSBOW)
+            spr(nj_jimmy_crossbow, NJ_JIMMY_CROSSBOW_W, NJ_JIMMY_CROSSBOW_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+        else
+            spr(nj_jimmy_sword, NJ_JIMMY_SWORD_W, NJ_JIMMY_SWORD_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+    } else {
+        // Armoured: the armour picture has no weapon, so the weapon is drawn in his front hand.
+        spr(armour_sprite(0, equipped[0]), 140, 140, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+        const uint16_t *w = weapon == W_CROSSBOW ? nj_crossbow : nj_samurai_sword;
+        spr(w, 48, 48, facing > 0 ? hx + HERO_DRAW - 30 : hx - 6, hy + 20, 36, 36, facing < 0);
+    }
     // The crescent slash, in front of him while the sword swings.
     if (weapon == W_SWORD && swing_t > 0)
         spr(nj_slash, NJ_SLASH_W, NJ_SLASH_H, facing > 0 ? hx + HERO_DRAW - 6 : hx - 50, hy - 2, 56, 56, facing < 0);
 }
 
-static const uint16_t *shop_picture(int kind) {
-    switch (kind) {
-    case 1: return nj_shop_banana;
-    case 2: return nj_shop_eagle;
-    case 3: return nj_shop_devil;
-    default: return nj_shop_armour;
+// Writes 1,234 style numbers.
+static void format_coins(char *out, size_t n, int v) {
+    char d[16];
+    int len = snprintf(d, sizeof d, "%d", v < 0 ? 0 : v), o = 0;
+    for (int i = 0; i < len && (size_t)o + 2 < n; i++) {
+        if (i > 0 && (len - i) % 3 == 0) out[o++] = ',';
+        out[o++] = d[i];
     }
+    out[o] = 0;
 }
 
-static void draw_floor(void) {
-    char buf[40];
-    spr(nj_floor_select, NJ_FLOOR_SELECT_W, NJ_FLOOR_SELECT_H, 0, 0, 480, 320, 0);
-    int x, y, w, h;
-    floor_rect(floor_cursor, &x, &y, &w, &h);
-    frame(x - 5, y - 5, w + 10, h + 10, 3, COL_TEXT);
-    fill(0, 296, GAME_W, 24, COL_BLACK);
-    snprintf(buf, sizeof buf, "COINS %d", coins);
-    text(8, 300, buf, COL_GOLD, 2);
-    text_right(472, 300, "SET ENTER  MID LEAVE", COL_DIM, 2);
+// Text at the biggest of scale 2 or 1 that fits in `w` pixels.
+static void text_fit(int x, int y, int w, const char *s, uint16_t c) {
+    text(x, y + (text_width(s, 2) <= w ? 0 : 4), s, c, text_width(s, 2) <= w ? 2 : 1);
 }
 
+// The Armour Shop. The picture (shop_art.c) has the grid; the changing parts are drawn on top.
 static void draw_shop(void) {
-    char buf[40];
-    spr(shop_picture(shop_kind), NJ_SHOP_ARMOUR_W, NJ_SHOP_ARMOUR_H, 0, 0, 480, 320, 0);
-    int x, y, w, h;
-    shop_rect(shop_kind, equipped[shop_kind], &x, &y, &w, &h);
-    frame(x - 2, y - 2, w + 4, h + 4, 3, COL_GOLD);      // the armour being worn
-    shop_rect(shop_kind, shop_cursor, &x, &y, &w, &h);
-    frame(x - 5, y - 5, w + 10, h + 10, 2, COL_TEXT);    // the cursor
-    fill(0, 296, GAME_W, 24, COL_BLACK);
-    snprintf(buf, sizeof buf, "COINS %d", coins);
-    text(8, 300, buf, COL_GOLD, 2);
-    text_centred(300, "MID BACK", COL_DIM, 2);
-    if (shop_msg_t > 0) text_right(472, 300, "NOT ENOUGH COINS", COL_RED, 2);
-    else if (owned_armour[shop_kind] & (1u << shop_cursor)) text_right(472, 300, "SET WEAR", COL_TEXT, 2);
+    // Where the cells are on the 480 x 320 picture: five tier columns and four character rows.
+    static const int col_cx[N_ARMOUR] = {164, 232, 300, 369, 444};
+    static const int row_y[N_SHOPS] = {31, 87, 142, 197};
+    static const int row_h[N_SHOPS] = {51, 50, 49, 50};
+    const uint16_t field = RGB565(6, 18, 40), edge = RGB565(70, 180, 230);
+    char buf[24];
+    int k = shop_row, t = shop_col;
+    int owned = (owned_armour[k] >> t) & 1, worn = equipped[k] == t;
+    int can_buy = coins >= armour_price[t];
+
+    spr(shop_bg, SHOP_BG_W, SHOP_BG_H, 0, 0, 480, 320, 0);
+
+    // The back arrow, top left, and the wallet.
+    if (shop_on_back) frame(4, 0, 41, 26, 2, COL_GOLD);
+    format_coins(buf, sizeof buf, coins);
+    text_fit(397, 6, 72, buf, COL_GOLD);
+
+    // A green tick on the armour each character wears; a gold frame on the cursor.
+    for (int r = 0; r < N_SHOPS; r++) {
+        int x = col_cx[equipped[r]] - 31;
+        disc(x + 54, row_y[r] + 9, 7, COL_HP_GOOD);
+        line(x + 51, row_y[r] + 9, x + 53, row_y[r] + 12, COL_TEXT);
+        line(x + 53, row_y[r] + 12, x + 58, row_y[r] + 6, COL_TEXT);
+    }
+    if (!shop_on_back) frame(col_cx[t] - 31, row_y[k], 62, row_h[k], 3, COL_GOLD);
+
+    // Bottom bar: the picture of the selected armour, then its name, DEF, LIVES and cost.
+    spr(armour_sprite(k, t), 140, 140, 16, 258, 52, 52, 0);
+
+    fill(77, 275, 96, 25, field);
+    frame(77, 275, 96, 25, 1, edge);
+    text(81, 278, character_name[k], COL_TEXT, 1);
+    text(81, 289, armour_name[t], COL_GOLD, 1);
+
+    snprintf(buf, sizeof buf, "%d", armour_def[t]);
+    text(231, 267, buf, COL_TEXT, 2);
+    snprintf(buf, sizeof buf, "%d", armour_lives[t]);
+    text(236, 287, buf, COL_TEXT, 2);
+
+    if (worn) text(315, 285, "EQUIPPED", COL_HP_GOOD, 1);
+    else if (owned) text(315, 281, "OWNED", COL_HP_GOOD, 2);
     else {
-        snprintf(buf, sizeof buf, "SET BUY %d", armour_price[shop_cursor]);
-        text_right(472, 300, buf, COL_TEXT, 2);
+        format_coins(buf, sizeof buf, armour_price[t]);
+        text_fit(315, 281, 58, buf, COL_GOLD);
+    }
+
+    // The button shows what MID will do.
+    const char *label;
+    if (shop_on_back) label = "BACK";
+    else if (worn) label = "EQUIPPED";
+    else if (owned) label = "EQUIP";
+    else label = "BUY";
+    if (!shop_on_back && !owned && !can_buy) {
+        fill(385, 268, 83, 30, RGB565(170, 30, 30));
+        frame(385, 268, 83, 30, 2, COL_TEXT);
+        text(399, 274, "NOT ENOUGH", COL_TEXT, 1);
+        text(417, 285, "COINS", COL_TEXT, 1);
+    } else if (worn) {
+        text_adv(383 + 1, 276, label, COL_TEXT, 2, 11);
+    } else {
+        int sc = text_width(label, 3) <= 80 ? 3 : 2;
+        text(427 - text_width(label, sc) / 2, 283 - 7 * sc / 2, label, COL_TEXT, sc);
     }
 }
 
-void game_draw(uint16_t *buf, int y0, int rows) {
-    strip = buf;
-    strip_y0 = y0;
-    strip_rows = rows;
+// One line of the level-clear tally: a label on the left and the coins on the right.
+static void tally_row(int y, const char *label, int coins_won, uint16_t colour) {
+    char buf[16];
+    text(36, y, label, colour, 2);
+    snprintf(buf, sizeof buf, "+%d", coins_won);
+    text_right(444, y, buf, colour, 2);
+}
 
+// The level-clear screen: what Jimmy Bob earned this level, and why.
+static void draw_level_clear(void) {
+    char buf[40];
+    fill(20, 40, 440, 272, COL_BLACK);
+    frame(20, 40, 440, 272, 3, COL_GOLD);
+    snprintf(buf, sizeof buf, "LEVEL %d CLEAR", level);
+    text_centred(48, buf, COL_GOLD, 3);
+
+    snprintf(buf, sizeof buf, "SKELETONS %d X %d", lv_skel, COIN_SKELETON);
+    tally_row(82, buf, lv_skel * COIN_SKELETON, COL_TEXT);
+    snprintf(buf, sizeof buf, "GHOSTS %d X %d", lv_ghost, COIN_GHOST);
+    tally_row(104, buf, lv_ghost * COIN_GHOST, COL_TEXT);
+    tally_row(126, "STREAK BONUS", lv_streak_coins, lv_streak_coins ? COL_TEXT : COL_DIM);
+    snprintf(buf, sizeof buf, "LEVEL %d X %d", level, LEVEL_BONUS_PER_LEVEL);
+    tally_row(148, buf, sum_level, COL_TEXT);
+    tally_row(170, "NO HEARTS LOST", sum_perfect, sum_perfect ? COL_TEXT : COL_DIM);
+    if (sum_acc_pct < 0) {
+        tally_row(192, "ACCURACY: NEED 5 SHOTS", 0, COL_DIM);
+    } else {
+        const char *name = sum_acc_bonus == 30 ? " SHARPSHOOTER" : sum_acc_bonus == 20 ? " GREAT AIM"
+                         : sum_acc_bonus == 10 ? " GOOD AIM" : "";
+        snprintf(buf, sizeof buf, "ACCURACY %d%%%s", sum_acc_pct, name);
+        tally_row(192, buf, sum_acc_bonus, sum_acc_bonus ? COL_TEXT : COL_DIM);
+    }
+
+    fill(36, 216, 408, 2, COL_DIM);
+    tally_row(224, "LEVEL TOTAL", sum_total, COL_GOLD);
+    snprintf(buf, sizeof buf, "%d", coins);
+    text(36, 246, "WALLET", COL_TEXT, 2);
+    text_right(444, 246, buf, COL_TEXT, 2);
+
+    if (banner_timer > BANNER_MIN_TICKS && ((ticks / 15) & 1)) text_centred(270, "SET: CONTINUE", COL_GOLD, 2);
+    snprintf(buf, sizeof buf, "NEXT: %s", level + 1 < BOSS_LEVEL ? level_name[level + 1] : "THE BIG BOSS");
+    text_centred(290, buf, COL_DIM, 2);
+}
+
+static void draw_scene(void) {
     if (state == ST_TITLE) {
         draw_title();
         return;
     }
     if (state == ST_WIN) {
         draw_win();
-        return;
-    }
-    if (state == ST_FLOOR) {
-        draw_floor();
         return;
     }
     if (state == ST_SHOP) {
@@ -1457,12 +1637,22 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         text_centred(134, "OUT OF HEARTS", COL_TEXT, 3);
         text_centred(170, "SET: TRY AGAIN", COL_GOLD, 2);
     }
-    if (state == ST_BANNER) {
-        char buf[32];
-        fill(60, 120, 360, 80, COL_BLACK);
-        snprintf(buf, sizeof buf, "LEVEL %d CLEAR", level);
-        text_centred(134, buf, COL_TEXT, 3);
-        snprintf(buf, sizeof buf, "NEXT: %s", level + 1 < BOSS_LEVEL ? level_name[level + 1] : "THE BIG BOSS");
-        text_centred(170, buf, COL_GOLD, 2);
-    }
+    if (state == ST_BANNER) draw_level_clear();
+}
+
+// The "reset?" box, drawn over whatever screen the game is on.
+static void draw_confirm(void) {
+    fill(50, 100, 380, 120, COL_BLACK);
+    frame(50, 100, 380, 120, 3, COL_GOLD);
+    text_centred(114, "RESET THE GAME?", COL_TEXT, 3);
+    text_centred(158, "RST: YES, RESET", COL_RED, 2);
+    text_centred(186, "SET: BACK TO GAME", COL_GOLD, 2);
+}
+
+void game_draw(uint16_t *buf, int y0, int rows) {
+    strip = buf;
+    strip_y0 = y0;
+    strip_rows = rows;
+    draw_scene();
+    if (confirm_reset) draw_confirm();
 }
