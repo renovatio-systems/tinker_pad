@@ -79,7 +79,7 @@
 
 // ---- Types -----------------------------------------------------------------
 
-typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN, ST_SHOP } state_t;
+typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN, ST_FLOOR, ST_SHOP } state_t;
 typedef enum { K_SKELETON, K_GHOST, K_BOSS } kind_t;
 typedef enum { W_CROSSBOW, W_SWORD } weapon_t;
 typedef enum { PJ_BOLT, PJ_PEEL, PJ_POO, PJ_DART } proj_kind_t;
@@ -121,6 +121,7 @@ typedef struct {
     int target;   // index into surfaces[] they are heading for
     int cool;     // ticks until they pick a new target
     int shot;     // ticks until they can throw again
+    int hp;       // hit points from their armour; at 0 they are out for the level
 } buddy_t;
 
 // ---- Game state ------------------------------------------------------------
@@ -140,6 +141,7 @@ static enemy_t enemies[MAX_ENEMY];
 static int n_enemies;
 static proj_t projs[MAX_PROJ];
 static int eagle_cool, laser_t;
+static int eagle_hp;            // the eagle's hit points (ghosts can reach it, skeletons cannot)
 // Which sidekicks are with Jimmy Bob this level: none in level 1, one from level 2 on.
 static int side_eagle, side_banana, side_devil;
 static int eagle_x, eagle_y;
@@ -155,8 +157,12 @@ static uint32_t rng = 4242;
 static const int armour_price[N_ARMOUR] = {0, 25, 50, 100, 200, 400, 800, 1600, 25600};
 static const int armour_def[N_ARMOUR] = {1, 2, 3, 5, 8, 10, 15, 25, 1800};   // blocks this % of hits, up to 50
 static const int armour_lives[N_ARMOUR] = {5, 5, 6, 7, 9, 10, 12, 15, 900};  // hit points
-static uint16_t owned_armour;     // bit i set: item i is bought
-static int equipped;              // the item being worn
+// Characters with armour: 0 Jimmy Bob, 1 banana, 2 golden eagle, 3 Tasmanian devil.
+#define N_SHOPS 4
+static uint16_t owned_armour[N_SHOPS];  // bit i set: item i is bought
+static int equipped[N_SHOPS];           // the item each one is wearing
+static int shop_kind;                   // which shop is open
+static int floor_cursor;                // which shop the floor screen points at
 static int shop_cursor, shop_next, shop_from_title, shop_msg_t;
 
 // The strip being drawn right now. Everything is clipped to it.
@@ -608,7 +614,7 @@ static void start_level(int n) {
     spawn_next = 0;
     spawn_timer = 30;
     clear_projs();
-    hero_hp = armour_lives[equipped];
+    hero_hp = armour_lives[equipped[0]];
     hero_inv = 0;
     hx = 40;
     hy = GROUND_Y - HERO_DRAW;
@@ -627,8 +633,9 @@ static void start_level(int n) {
     side_devil = level == BOSS_LEVEL;
     eagle_x = 4;
     eagle_y = GROUND_Y - FRIEND_DRAW; // starts at the bottom and flies up
-    banana = (buddy_t){2, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 40};
-    devil = (buddy_t){62, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 60};
+    banana = (buddy_t){2, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 40, armour_lives[equipped[1]]};
+    devil = (buddy_t){62, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 60, armour_lives[equipped[3]]};
+    eagle_hp = armour_lives[equipped[2]];
     if (level == BOSS_LEVEL) {
         spawn_queue[0] = K_BOSS;
         spawn_n = 1;
@@ -669,7 +676,7 @@ void game_init(void) {
     level = 1;
     coins = 0;
     weapon = W_CROSSBOW;
-    hero_hp = armour_lives[equipped];
+    hero_hp = armour_lives[equipped[0]];
     hero_inv = 0;
     hx = 40;
     hy = GROUND_Y - HERO_DRAW;
@@ -679,8 +686,11 @@ void game_init(void) {
     clear_projs();
     banner_timer = 0;
     boss_timer = 0;
-    owned_armour = 1;   // the starter armour
-    equipped = 0;
+    for (int k = 0; k < N_SHOPS; k++) {
+        owned_armour[k] = 1;   // the starter armour
+        equipped[k] = 0;
+    }
+    shop_kind = 0;
     shop_msg_t = 0;
 }
 
@@ -688,7 +698,7 @@ void game_init(void) {
 
 static void hit_hero(void) {
     if (hero_inv > 0) return;
-    int block = imin(50, armour_def[equipped]);
+    int block = imin(50, armour_def[equipped[0]]);
     if (rnd(100) < block) return;   // the armour takes this one
     hero_hp--;
     hero_inv = HURT_TICKS;
@@ -774,6 +784,40 @@ static int shoot(proj_kind_t kind, int sx, int sy, int tx, int ty, int speed) {
     return 0;
 }
 
+// A sidekick is hit: its armour may block it, otherwise it loses a hit point. At zero it is
+// out for the rest of the level.
+static void damage_side(int who) {
+    int k = who == 0 ? 2 : who == 1 ? 1 : 3;   // shop index for the eagle, banana, devil
+    if (rnd(100) < imin(50, armour_def[equipped[k]])) return;
+    if (who == 0) {
+        eagle_hp--;
+        if (eagle_hp <= 0) side_eagle = 0;
+    } else {
+        buddy_t *b = who == 1 ? &banana : &devil;
+        b->hp--;
+        if (b->hp <= 0) {
+            if (who == 1) side_banana = 0;
+            else side_devil = 0;
+        }
+    }
+}
+
+// The sidekick nearest to a skeleton or ghost, if it is in reach and closer than the hero.
+static int side_in_reach(int x, int y, int w, int h, int hero_dist) {
+    int best = -1, bestd = hero_dist;
+    if (side_eagle && eagle_hp > 0 && overlap(x, y, w, h, eagle_x, eagle_y, FRIEND_DRAW, FRIEND_DRAW))
+        best = 0, bestd = 0;
+    if (best < 0 && side_banana && banana.hp > 0) {
+        int d = iabs(banana.x + FRIEND_DRAW / 2 - (x + w / 2));
+        if (d < 44 && d < bestd) { bestd = d; best = 1; }
+    }
+    if (best < 0 && side_devil && devil.hp > 0) {
+        int d = iabs(devil.x + FRIEND_DRAW / 2 - (x + w / 2));
+        if (d < 44 && d < bestd) { bestd = d; best = 2; }
+    }
+    return best;
+}
+
 static void update_enemies(void) {
     int hcx = hx + HERO_DRAW / 2, hcy = hy + HERO_DRAW / 2;
     for (int i = 0; i < n_enemies; i++) {
@@ -792,7 +836,9 @@ static void update_enemies(void) {
                 e->vx = sgn(dx) * e->sp;
                 e->dir = sgn(dx);
             } else if (e->cool == 0) {
-                hit_hero();          // the big sword swings
+                int who = side_in_reach(e->x, e->y, w, h, iabs(dx));
+                if (who > 0) damage_side(who);   // the banana or the devil is closer
+                else hit_hero();                 // the big sword swings
                 e->cool = 50;
             }
             e->x = imax(0, imin(GAME_W - w, e->x));
@@ -809,6 +855,10 @@ static void update_enemies(void) {
             int visible = e->vis_t < GHOST_VIS;
             if (visible && e->cool == 0 && overlap(hx, hy, HERO_DRAW, HERO_DRAW, e->x, e->y, w, h)) {
                 hit_hero();          // a ghost's touch
+                e->cool = 60;
+            } else if (visible && e->cool == 0 && side_eagle && eagle_hp > 0 &&
+                       overlap(eagle_x, eagle_y, FRIEND_DRAW, FRIEND_DRAW, e->x, e->y, w, h)) {
+                damage_side(0);      // the ghost gets the eagle
                 e->cool = 60;
             }
         } else {                     // the Mega Boss
@@ -1077,12 +1127,48 @@ static void update_boss_down(void) {
 
 // ---- Shop ------------------------------------------------------------------
 
+// The layout of each shop picture (480 x 320): the four card columns, two rows of cards, and
+// the showcase on the right (index 8). Rows: y and height.
+typedef struct {
+    int xs[4], w;
+    int row_y[2], row_h[2];
+    int showcase_x, showcase_y, showcase_w, showcase_h;
+} shop_layout_t;
+
+static const shop_layout_t layouts[N_SHOPS] = {
+    {{35, 92, 149, 206}, 54, {72, 170}, {94, 100}, 265, 30, 187, 250},   // Jimmy Bob
+    {{35, 96, 156, 217}, 57, {70, 165}, {90, 88}, 292, 66, 160, 200},   // banana
+    {{37, 102, 166, 230}, 58, {95, 175}, {75, 73}, 295, 70, 145, 125},  // golden eagle
+    {{35, 100, 160, 222}, 55, {65, 155}, {85, 95}, 295, 100, 155, 130}, // devil
+};
+
+// Where each shop's card is. Index 8 is the showcase.
+static void shop_rect(int kind, int idx, int *x, int *y, int *w, int *h) {
+    const shop_layout_t *L = &layouts[kind];
+    if (idx == 8) {
+        *x = L->showcase_x; *y = L->showcase_y; *w = L->showcase_w; *h = L->showcase_h;
+        return;
+    }
+    int col = idx % 4, row = idx / 4;
+    *x = L->xs[col];
+    *y = L->row_y[row];
+    *w = L->w;
+    *h = L->row_h[row];
+}
+
+// Floor screen: the four shop cards along the bottom of the picture.
+static void floor_rect(int i, int *x, int *y, int *w, int *h) {
+    static const int fx[4] = {0, 118, 244, 373};
+    static const int fw[4] = {111, 121, 120, 107};
+    *x = fx[i]; *y = 88; *w = fw[i]; *h = 185;
+}
+
 static void open_shop(int next, int from_title) {
     shop_next = next;
     shop_from_title = from_title;
-    shop_cursor = equipped;
+    floor_cursor = shop_kind;
     shop_msg_t = 0;
-    state = ST_SHOP;
+    state = ST_FLOOR;
 }
 
 static void close_shop(void) {
@@ -1090,14 +1176,9 @@ static void close_shop(void) {
     else start_level(shop_next);
 }
 
-// Where each item's card is on the shop picture (480 x 320).
-static void shop_rect(int idx, int *x, int *y, int *w, int *h) {
-    if (idx == 8) { *x = 265; *y = 30; *w = 187; *h = 250; return; }
-    int col = idx % 4, row = idx / 4;
-    *x = 35 + 57 * col;
-    *y = row ? 170 : 72;
-    *w = 54;
-    *h = row ? 100 : 94;
+static void floor_move(uint8_t pressed) {
+    if ((pressed & JOY_LEFT) && floor_cursor > 0) floor_cursor--;
+    if ((pressed & JOY_RIGHT) && floor_cursor < N_SHOPS - 1) floor_cursor++;
 }
 
 static void shop_move(uint8_t pressed) {
@@ -1116,13 +1197,13 @@ static void shop_move(uint8_t pressed) {
 
 // Buys the item under the cursor, or wears it if it is already bought.
 static void shop_buy(void) {
-    int i = shop_cursor;
-    if (owned_armour & (1u << i)) {
-        equipped = i;
+    int i = shop_cursor, k = shop_kind;
+    if (owned_armour[k] & (1u << i)) {
+        equipped[k] = i;
     } else if (coins >= armour_price[i]) {
         coins -= armour_price[i];
-        owned_armour |= (uint16_t)(1u << i);
-        equipped = i;
+        owned_armour[k] |= (uint16_t)(1u << i);
+        equipped[k] = i;
     } else {
         shop_msg_t = 60;
     }
@@ -1154,11 +1235,20 @@ void game_update(uint8_t held, uint8_t pressed) {
     case ST_WIN:
         if (pressed & JOY_SET) game_init();
         break;
+    case ST_FLOOR:
+        floor_move(pressed);
+        if (pressed & JOY_SET) {
+            shop_kind = floor_cursor;
+            shop_cursor = equipped[shop_kind];
+            state = ST_SHOP;
+        }
+        if (pressed & JOY_MID) close_shop();
+        break;
     case ST_SHOP:
         shop_move(pressed);
         if (shop_msg_t > 0) shop_msg_t--;
         if (pressed & JOY_SET) shop_buy();
-        if (pressed & JOY_MID) close_shop();
+        if (pressed & JOY_MID) state = ST_FLOOR;   // back to the floor screen
         break;
     }
 }
@@ -1187,7 +1277,7 @@ static void draw_win(void) {
 static void draw_hud(void) {
     char buf[32];
     fill(0, 0, GAME_W, HUD_BAND, COL_BAND);
-    int max_hp = armour_lives[equipped];
+    int max_hp = armour_lives[equipped[0]];
     if (max_hp <= 10) {
         for (int i = 0; i < max_hp; i++) {
             if (i < hero_hp) spr(nj_heart, NJ_HEART_W, NJ_HEART_H, 8 + i * 26, 10, 22, 22, 0);
@@ -1282,20 +1372,41 @@ static void draw_hero(void) {
         spr(nj_slash, NJ_SLASH_W, NJ_SLASH_H, facing > 0 ? hx + HERO_DRAW - 6 : hx - 50, hy - 2, 56, 56, facing < 0);
 }
 
+static const uint16_t *shop_picture(int kind) {
+    switch (kind) {
+    case 1: return nj_shop_banana;
+    case 2: return nj_shop_eagle;
+    case 3: return nj_shop_devil;
+    default: return nj_shop_armour;
+    }
+}
+
+static void draw_floor(void) {
+    char buf[40];
+    spr(nj_floor_select, NJ_FLOOR_SELECT_W, NJ_FLOOR_SELECT_H, 0, 0, 480, 320, 0);
+    int x, y, w, h;
+    floor_rect(floor_cursor, &x, &y, &w, &h);
+    frame(x - 5, y - 5, w + 10, h + 10, 3, COL_TEXT);
+    fill(0, 296, GAME_W, 24, COL_BLACK);
+    snprintf(buf, sizeof buf, "COINS %d", coins);
+    text(8, 300, buf, COL_GOLD, 2);
+    text_right(472, 300, "SET ENTER  MID LEAVE", COL_DIM, 2);
+}
+
 static void draw_shop(void) {
     char buf[40];
-    spr(nj_shop_armour, NJ_SHOP_ARMOUR_W, NJ_SHOP_ARMOUR_H, 0, 0, 480, 320, 0);
+    spr(shop_picture(shop_kind), NJ_SHOP_ARMOUR_W, NJ_SHOP_ARMOUR_H, 0, 0, 480, 320, 0);
     int x, y, w, h;
-    shop_rect(equipped, &x, &y, &w, &h);
+    shop_rect(shop_kind, equipped[shop_kind], &x, &y, &w, &h);
     frame(x - 2, y - 2, w + 4, h + 4, 3, COL_GOLD);      // the armour being worn
-    shop_rect(shop_cursor, &x, &y, &w, &h);
+    shop_rect(shop_kind, shop_cursor, &x, &y, &w, &h);
     frame(x - 5, y - 5, w + 10, h + 10, 2, COL_TEXT);    // the cursor
     fill(0, 296, GAME_W, 24, COL_BLACK);
     snprintf(buf, sizeof buf, "COINS %d", coins);
     text(8, 300, buf, COL_GOLD, 2);
-    text_centred(300, "MID LEAVE", COL_DIM, 2);
+    text_centred(300, "MID BACK", COL_DIM, 2);
     if (shop_msg_t > 0) text_right(472, 300, "NOT ENOUGH COINS", COL_RED, 2);
-    else if (owned_armour & (1u << shop_cursor)) text_right(472, 300, "SET WEAR", COL_TEXT, 2);
+    else if (owned_armour[shop_kind] & (1u << shop_cursor)) text_right(472, 300, "SET WEAR", COL_TEXT, 2);
     else {
         snprintf(buf, sizeof buf, "SET BUY %d", armour_price[shop_cursor]);
         text_right(472, 300, buf, COL_TEXT, 2);
@@ -1313,6 +1424,10 @@ void game_draw(uint16_t *buf, int y0, int rows) {
     }
     if (state == ST_WIN) {
         draw_win();
+        return;
+    }
+    if (state == ST_FLOOR) {
+        draw_floor();
         return;
     }
     if (state == ST_SHOP) {

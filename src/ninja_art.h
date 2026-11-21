@@ -84,6 +84,22 @@ extern const uint16_t nj_slash[NJ_SLASH_W * NJ_SLASH_H];
 #define NJ_SHOP_ARMOUR_H 320
 extern const uint16_t nj_shop_armour[NJ_SHOP_ARMOUR_W * NJ_SHOP_ARMOUR_H];
 
+#define NJ_FLOOR_SELECT_W 480
+#define NJ_FLOOR_SELECT_H 320
+extern const uint16_t nj_floor_select[NJ_FLOOR_SELECT_W * NJ_FLOOR_SELECT_H];
+
+#define NJ_SHOP_BANANA_W 480
+#define NJ_SHOP_BANANA_H 320
+extern const uint16_t nj_shop_banana[NJ_SHOP_BANANA_W * NJ_SHOP_BANANA_H];
+
+#define NJ_SHOP_EAGLE_W 480
+#define NJ_SHOP_EAGLE_H 320
+extern const uint16_t nj_shop_eagle[NJ_SHOP_EAGLE_W * NJ_SHOP_EAGLE_H];
+
+#define NJ_SHOP_DEVIL_W 480
+#define NJ_SHOP_DEVIL_H 320
+extern const uint16_t nj_shop_devil[NJ_SHOP_DEVIL_W * NJ_SHOP_DEVIL_H];
+
 #define NJ_CROSSBOW_W 48
 #define NJ_CROSSBOW_H 48
 extern const uint16_t nj_crossbow[NJ_CROSSBOW_W * NJ_CROSSBOW_H];
