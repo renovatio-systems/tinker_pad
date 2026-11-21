@@ -49,6 +49,8 @@ static uint32_t checksum(const uint16_t *p, int n) {
 static void draw_frame(bool first) {
     int cur = 0;
     for (int s = 0; s < STRIPS; s++) {
+        // Sample the buttons between strips: a whole frame can take long enough to miss a tap.
+        input_poll((uint32_t)(time_us_64() / 1000));
         int y0 = s * GAME_STRIP_ROWS;
         game_draw(strip_rgb, y0, GAME_STRIP_ROWS);
 

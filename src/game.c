@@ -44,10 +44,11 @@
 #define GHOST_PAD  6                    // extra reach on each side when hitting a ghost
 #define BOSS_DRAW  90
 #define BOSS_FALLEN_H 30                // the boss lies this tall once beaten
-#define BOSS_HP    12
+#define BOSS_HP    24
+#define BOSS_LEVEL 10                   // level 10 is the big boss
 #define BOSS_X     336
 #define BOSS_Y     (GROUND_Y - BOSS_DRAW)
-#define MAX_ENEMY  12
+#define MAX_ENEMY  24
 #define MAX_PROJ   24
 #define BANNER_TICKS 90
 #define BOLT_SPEED 12                   // crossbow bolt, pixels per tick
@@ -177,6 +178,14 @@ static void fill(int x, int y, int w, int h, uint16_t c) {
     int y0 = imax(y, strip_y0), y1 = imin(y + h, strip_y0 + strip_rows);
     for (int yy = y0; yy < y1; yy++)
         for (int xx = x0; xx < x1; xx++) strip[(yy - strip_y0) * GAME_W + xx] = c;
+}
+
+// A border of thickness t around a rectangle.
+static void frame(int x, int y, int w, int h, int t, uint16_t c) {
+    fill(x, y, w, t, c);
+    fill(x, y + h - t, w, t, c);
+    fill(x, y, t, h, c);
+    fill(x + w - t, y, t, h, c);
 }
 
 // A filled circle, clipped to the strip.
@@ -357,9 +366,18 @@ static void day_sky(void) {
 #define COL_EARTH RGB565(74, 46, 14)
 #define COL_EARTH_JOINT RGB565(40, 24, 6)
 
-static void background(void) {
-    if (level == 2) day_sky();
-    else night_sky();
+// Helpers for the level backgrounds. Every background is drawn in code, strip by strip.
+
+static void gradient(int y_top, int y_bot, int r0, int g0, int b0, int r1, int g1, int b1) {
+    for (int y = imax(strip_y0, y_top); y < imin(strip_y0 + strip_rows, y_bot); y++) {
+        int t = (y - y_top) * 256 / (y_bot - y_top);
+        uint16_t c = RGB565(r0 + (r1 - r0) * t / 256, g0 + (g1 - g0) * t / 256, b0 + (b1 - b0) * t / 256);
+        fill(0, y, GAME_W, 1, c);
+    }
+}
+
+// The stepped pyramid, from PYR_TOP down to the ground.
+static void pyramid(void) {
     for (int y = imax(strip_y0, PYR_TOP); y < imin(strip_y0 + strip_rows, GROUND_Y); y++) {
         int tier = (y - PYR_TOP) / PYR_TIER;              // 0 at the top, 5 at the base
         int half = 10 + tier * 22;                         // each step is wider
@@ -367,16 +385,171 @@ static void background(void) {
         fill(GAME_W / 2 - half, y, 2 * half, 1, c);
         fill(GAME_W / 2 + half - 3, y, 3, 1, COL_PYR_SHADE);
     }
-    // The ground: a band of earth with stone joints, from the ground line to the bottom.
-    for (int y = imax(strip_y0, GROUND_Y + 2); y < strip_y0 + strip_rows; y++) {
-        int row = (y - GROUND_Y - 2) / 16;                   // which course of stones
-        fill(0, y, GAME_W, 1, COL_EARTH);
-        if ((y - GROUND_Y - 2) % 16 == 0) fill(0, y, GAME_W, 1, COL_EARTH_JOINT);
-        for (int x = (row & 1) * 24; x < GAME_W; x += 48) fill(x, y, 2, 1, COL_EARTH_JOINT);
-    }
-    // The ground line the characters stand on.
-    if (GROUND_Y >= strip_y0 && GROUND_Y < strip_y0 + strip_rows) fill(0, GROUND_Y, GAME_W, 2, COL_PYR_EDGE);
 }
+
+// The ground: a band of blocks from the ground line to the bottom, with a line on top.
+static void ground_band(uint16_t body, uint16_t joint, uint16_t line_c) {
+    for (int y = imax(strip_y0, GROUND_Y + 2); y < strip_y0 + strip_rows; y++) {
+        int row = (y - GROUND_Y - 2) / 16;
+        fill(0, y, GAME_W, 1, body);
+        if ((y - GROUND_Y - 2) % 16 == 0) fill(0, y, GAME_W, 1, joint);
+        for (int x = (row & 1) * 24; x < GAME_W; x += 48) fill(x, y, 2, 1, joint);
+    }
+    if (GROUND_Y >= strip_y0 && GROUND_Y < strip_y0 + strip_rows) fill(0, GROUND_Y, GAME_W, 2, line_c);
+}
+
+// Level 3: a race track with a crowd in the stands and a kerb.
+static void race_track(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, 120, 120, 150, 190, 190, 205, 225);
+    static const uint16_t crowd[4] = {RGB565(230, 40, 40), RGB565(255, 220, 40), RGB565(255, 255, 255), RGB565(40, 200, 190)};
+    for (int y = 48; y < 112; y += 8)
+        for (int x = (y & 8) ? 0 : 4; x < GAME_W; x += 8)
+            fill(x, y, 5, 5, crowd[(x * 5 + y * 3 + ticks / 30) % 4]);
+    fill(0, 120, GAME_W, 176, RGB565(58, 58, 66));
+    for (int x = 0; x < GAME_W; x += 16)
+        fill(x, 118, 16, 4, ((x / 16 + ticks / 10) & 1) ? COL_RED : COL_TEXT);
+    for (int y = 160; y <= 210; y += 50)
+        for (int x = -((ticks * 4) % 24); x < GAME_W; x += 24) fill(x, y, 14, 3, COL_TEXT);
+    ground_band(RGB565(40, 40, 46), RGB565(70, 70, 80), COL_TEXT);
+}
+
+// Level 4: a graveyard at night: a moon, stars, tombstones and dead trees.
+static void graveyard(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, GROUND_Y, 12, 10, 30, 40, 30, 62);
+    for (int i = 0; i < N_STARS; i++) {
+        int lit = ((ticks + stars[i].phase) >> 3) % 5 != 0;
+        fill(stars[i].x, stars[i].y, stars[i].big ? 2 : 1, stars[i].big ? 2 : 1, lit ? COL_STAR_ON : COL_STAR_OFF);
+    }
+    disc(400, 72, 14, COL_MOON);
+    disc(405, 68, 12, RGB565(20, 16, 44));
+    static const int tomb_x[6] = {30, 110, 190, 290, 370, 440};
+    for (int i = 0; i < 6; i++) {
+        uint16_t stone = RGB565(130, 134, 142);
+        fill(tomb_x[i] - 12, GROUND_Y - 40, 24, 40, stone);
+        disc(tomb_x[i], GROUND_Y - 40, 12, stone);
+    }
+    static const int tree_x[2] = {230, 420};
+    for (int i = 0; i < 2; i++) {
+        int x = tree_x[i];
+        fill(x - 3, 150, 6, GROUND_Y - 150, RGB565(50, 40, 40));
+        line(x, 180, x - 22, 150, RGB565(50, 40, 40));
+        line(x, 200, x + 20, 166, RGB565(50, 40, 40));
+    }
+    ground_band(RGB565(52, 38, 30), RGB565(30, 20, 16), RGB565(120, 110, 100));
+}
+
+// Level 5: a haunted mansion with lit windows.
+static void mansion(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, GROUND_Y, 20, 8, 30, 70, 24, 64);
+    fill(120, 120, 240, GROUND_Y - 120, RGB565(64, 40, 72));
+    for (int y = 80; y < 120; y++) {
+        int hw = 120 * (y - 80) / 40;
+        fill(240 - hw, y, 2 * hw, 1, RGB565(40, 24, 48));
+    }
+    for (int wy = 140; wy <= 190; wy += 50)
+        for (int wx = 150; wx <= 300; wx += 50) {
+            int lit = (wx + wy + ticks / 25) % 3 != 0;
+            fill(wx, wy, 20, 26, lit ? RGB565(255, 210, 80) : RGB565(40, 30, 40));
+        }
+    fill(228, GROUND_Y - 46, 24, 46, COL_BLACK);
+    ground_band(RGB565(110, 70, 40), RGB565(70, 44, 24), RGB565(160, 110, 60));
+}
+
+// Level 6: a forest of round trees.
+static void forest(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, GROUND_Y, 110, 190, 130, 40, 110, 60);
+    static const int tree_x[6] = {30, 110, 190, 270, 350, 430};
+    for (int i = 0; i < 6; i++) {
+        int x = tree_x[i];
+        uint16_t leaves = (i & 1) ? RGB565(30, 110, 50) : RGB565(24, 96, 44);
+        fill(x - 6, 170, 12, GROUND_Y - 170, RGB565(90, 60, 30));
+        disc(x, 150, 40, leaves);
+        disc(x - 26, 176, 28, leaves);
+        disc(x + 26, 176, 28, leaves);
+        disc(x - 8, 140, 14, RGB565(60, 160, 80));
+    }
+    ground_band(RGB565(60, 110, 40), RGB565(40, 80, 26), RGB565(120, 200, 90));
+}
+
+// Level 7: a lava bridge over a glowing lava river.
+static void lava_bridge(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, GROUND_Y, 60, 12, 14, 170, 60, 20);
+    fill(40, 100, 60, 180, RGB565(60, 40, 40));
+    fill(380, 90, 70, 190, RGB565(60, 40, 40));
+    fill(0, 200, GAME_W, 14, RGB565(130, 110, 100));          // the bridge deck
+    for (int x = 0; x < GAME_W; x += 40) fill(x, 188, 4, 12, RGB565(130, 110, 100));
+    fill(0, 214, GAME_W, GROUND_Y - 214, RGB565(230, 90, 30)); // lava under the bridge
+    for (int x = -((ticks * 2) % 60); x < GAME_W; x += 60)
+        fill(x, 240 + ((x / 60) & 1) * 20, 26, 3, RGB565(255, 220, 80));
+    ground_band(RGB565(200, 60, 20), RGB565(255, 160, 60), RGB565(255, 200, 80));
+}
+
+// Level 8: a football pitch with a crowd in the stands.
+static void football(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, 110, 150, 200, 250, 220, 240, 255);
+    fill(0, 44, GAME_W, 66, RGB565(90, 90, 100));
+    static const uint16_t crowd[4] = {RGB565(230, 40, 40), RGB565(255, 220, 40), RGB565(60, 120, 255), RGB565(255, 255, 255)};
+    for (int y = 48; y < 106; y += 8)
+        for (int x = (y & 8) ? 0 : 6; x < GAME_W; x += 12) fill(x, y, 6, 5, crowd[(x + y + ticks / 40) % 4]);
+    for (int y = 110; y < GROUND_Y; y++)                      // grass stripes
+        fill(0, y, GAME_W, 1, ((y - 110) / 24) & 1 ? RGB565(40, 140, 50) : RGB565(50, 160, 60));
+    frame(20, 118, 440, 172, 2, COL_TEXT);
+    fill(239, 118, 2, 172, COL_TEXT);
+    ring(240, 204, 28, 26, 2, COL_TEXT);
+    frame(20, 160, 56, 88, 2, COL_TEXT);
+    frame(404, 160, 56, 88, 2, COL_TEXT);
+    ground_band(RGB565(30, 110, 40), RGB565(20, 80, 30), COL_TEXT);
+}
+
+// Level 9: the desert, with dunes and the pyramid.
+static void desert(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    gradient(44, 180, 255, 170, 80, 255, 230, 170);
+    disc(410, 80, 22, RGB565(255, 240, 120));
+    pyramid();
+    disc(90, 250, 110, RGB565(210, 170, 100));
+    disc(330, 262, 120, RGB565(220, 180, 110));
+    disc(470, 270, 90, RGB565(210, 170, 100));
+    ground_band(RGB565(200, 160, 90), RGB565(160, 120, 60), RGB565(240, 200, 120));
+}
+
+// Level 10: the big boss arena: a red glow, gold pillars and a stone floor.
+static void boss_arena(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    disc(240, 140, 120, RGB565(50, 10, 14));
+    fill(30, 60, 22, 236, RGB565(180, 130, 30));
+    fill(428, 60, 22, 236, RGB565(180, 130, 30));
+    fill(24, 52, 34, 10, RGB565(230, 180, 60));
+    fill(422, 52, 34, 10, RGB565(230, 180, 60));
+    ground_band(RGB565(70, 60, 70), RGB565(40, 36, 44), RGB565(200, 160, 120));
+}
+
+static void background(void) {
+    switch (level) {
+    case 1:  night_sky(); pyramid(); ground_band(COL_EARTH, COL_EARTH_JOINT, COL_PYR_EDGE); break;
+    case 2:  day_sky(); pyramid(); ground_band(COL_EARTH, COL_EARTH_JOINT, COL_PYR_EDGE); break;
+    case 3:  race_track(); break;
+    case 4:  graveyard(); break;
+    case 5:  mansion(); break;
+    case 6:  forest(); break;
+    case 7:  lava_bridge(); break;
+    case 8:  football(); break;
+    case 9:  desert(); break;
+    default: boss_arena(); break;
+    }
+}
+
+// Names of the levels, for the HUD and the banner.
+static const char *level_name[BOSS_LEVEL + 1] = {
+    "", "NIGHT SKY", "SUNNY SKY", "RACE TRACK", "GRAVEYARD", "MANSION", "FOREST",
+    "LAVA BRIDGE", "FOOTBALL PITCH", "DESERT", "BIG BOSS",
+};
 
 // ---- Setup -----------------------------------------------------------------
 
@@ -400,15 +573,20 @@ static void clear_projs(void) {
     for (int i = 0; i < MAX_PROJ; i++) projs[i].on = 0;
 }
 
-// How many of each enemy a level has, how fast, and how many may be on screen at once.
 typedef struct {
     int skeletons, ghosts, sk_speed, gh_speed, at_once;
 } wave_t;
 
-static const wave_t waves[3] = {
-    {4, 2, 1, 1, 1},  // level 1: one at a time
-    {4, 3, 2, 1, 2},  // level 2: two at a time
-    {5, 4, 2, 2, 3},  // level 3: three at a time
+static const wave_t waves[BOSS_LEVEL - 1] = {
+    {4, 2, 1, 1, 1},  // 1 night sky: one at a time
+    {4, 3, 2, 1, 2},  // 2 sunny sky: two at a time
+    {5, 4, 2, 2, 3},  // 3 race track
+    {5, 5, 2, 2, 3},  // 4 graveyard
+    {6, 5, 2, 2, 3},  // 5 mansion
+    {6, 6, 2, 2, 3},  // 6 forest
+    {7, 6, 3, 2, 4},  // 7 lava bridge
+    {7, 7, 3, 3, 4},  // 8 football pitch
+    {8, 8, 3, 3, 4},  // 9 desert
 };
 
 static kind_t spawn_queue[MAX_ENEMY];
@@ -428,18 +606,21 @@ static void start_level(int n) {
     vy = 0;
     facing = 1;
     bolt_cool = 0;
+    attack_pending = 0;   // a shot waiting from the last level does not carry over
     swing_t = 0;
     swing_cool = 0;
+    swing_mask = 0;
     eagle_cool = 30;
     laser_t = 0;
-    side_eagle = 0;
-    side_banana = level >= 2;   // the banana joins from level 2
-    side_devil = 0;
+    // One sidekick from level 2 on (the banana); the big boss gets all three.
+    side_eagle = level == BOSS_LEVEL;
+    side_banana = level >= 2;
+    side_devil = level == BOSS_LEVEL;
     eagle_x = 4;
     eagle_y = GROUND_Y - FRIEND_DRAW; // starts at the bottom and flies up
     banana = (buddy_t){2, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 40};
     devil = (buddy_t){62, GROUND_Y - FRIEND_DRAW, 0, 0, 0, 60};
-    if (level == 4) {
+    if (level == BOSS_LEVEL) {
         spawn_queue[0] = K_BOSS;
         spawn_n = 1;
         spawn_at_once = 1;
@@ -860,7 +1041,7 @@ static void update_play(uint8_t held, uint8_t pressed) {
     if (state != ST_PLAY) return;
 
     // Level clear: every skeleton and ghost is down.
-    if (level < 4 && spawn_next >= spawn_n && alive_targets() == 0) {
+    if (level < BOSS_LEVEL && spawn_next >= spawn_n && alive_targets() == 0) {
         state = ST_BANNER;
         banner_timer = BANNER_TICKS;
     }
@@ -942,8 +1123,8 @@ static void draw_hud(void) {
     snprintf(buf, sizeof buf, "%d", coins);
     text_right(428, 14, buf, COL_GOLD, 3);
 
-    if (level < 4) snprintf(buf, sizeof buf, "LEVEL %d", level);
-    else snprintf(buf, sizeof buf, "MEGA BOSS");
+    if (level < BOSS_LEVEL) snprintf(buf, sizeof buf, "LEVEL %d", level);
+    else snprintf(buf, sizeof buf, "BIG BOSS");
     text_centred(6, buf, COL_TEXT, 2);
     text_centred(26, weapon == W_CROSSBOW ? "CROSSBOW" : "SWORD", COL_DIM, 2);
 }
@@ -1064,6 +1245,7 @@ void game_draw(uint16_t *buf, int y0, int rows) {
         fill(60, 120, 360, 80, COL_BLACK);
         snprintf(buf, sizeof buf, "LEVEL %d CLEAR", level);
         text_centred(134, buf, COL_TEXT, 3);
-        text_centred(170, level < 3 ? "NEXT LEVEL" : "THE MEGA BOSS!", COL_GOLD, 2);
+        snprintf(buf, sizeof buf, "NEXT: %s", level + 1 < BOSS_LEVEL ? level_name[level + 1] : "THE BIG BOSS");
+        text_centred(170, buf, COL_GOLD, 2);
     }
 }
