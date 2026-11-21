@@ -1,4 +1,4 @@
-add_executable(tinker_pad main.c game.c input.c led.c)
+add_executable(tinker_pad main.c game.c ninja_art.c input.c led.c)
 
 pico_generate_pio_header(tinker_pad ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 

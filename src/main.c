@@ -119,11 +119,15 @@ int main(void) {
         uint64_t now = time_us_64();
         input_poll((uint32_t)(now / 1000));
 
-        if (now >= next_tick) {
+        // Game time runs at GAME_TICK_HZ even when a screen update is slow: catch up on
+        // missed ticks (at most a few per frame), then draw once.
+        int steps = 0;
+        while (now >= next_tick && steps < 4) {
             game_update(input_held(), input_pressed());
             next_tick += tick_us;
-            if (now >= next_tick) next_tick = now + tick_us;
-            draw_frame(false);
+            steps++;
         }
+        if (now >= next_tick) next_tick = now + tick_us; // far behind: start the grid again
+        if (steps > 0) draw_frame(false);
     }
 }
