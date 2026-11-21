@@ -68,6 +68,18 @@ extern const uint16_t nj_title_logo[NJ_TITLE_LOGO_W * NJ_TITLE_LOGO_H];
 #define NJ_BACKGROUND_FULL_H 320
 extern const uint16_t nj_background_full[NJ_BACKGROUND_FULL_W * NJ_BACKGROUND_FULL_H];
 
+#define NJ_JIMMY_SWORD_W 140
+#define NJ_JIMMY_SWORD_H 140
+extern const uint16_t nj_jimmy_sword[NJ_JIMMY_SWORD_W * NJ_JIMMY_SWORD_H];
+
+#define NJ_JIMMY_CROSSBOW_W 140
+#define NJ_JIMMY_CROSSBOW_H 140
+extern const uint16_t nj_jimmy_crossbow[NJ_JIMMY_CROSSBOW_W * NJ_JIMMY_CROSSBOW_H];
+
+#define NJ_SLASH_W 96
+#define NJ_SLASH_H 96
+extern const uint16_t nj_slash[NJ_SLASH_W * NJ_SLASH_H];
+
 #define NJ_CROSSBOW_W 48
 #define NJ_CROSSBOW_H 48
 extern const uint16_t nj_crossbow[NJ_CROSSBOW_W * NJ_CROSSBOW_H];

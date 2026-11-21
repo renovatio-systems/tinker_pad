@@ -5,7 +5,7 @@
 // Controls
 //   Title:   SET starts.
 //   Playing: LEFT / RIGHT walk, UP jumps, MID attacks with the weapon in hand,
-//            SET switches between the crossbow and the red dagger.
+//            SET switches between the crossbow and the samurai sword.
 //            RST restarts from the title.
 //   Out of hearts: SET tries the level again (coins are kept).
 //   Win:     SET goes back to the title.
@@ -38,7 +38,10 @@
 #define HEARTS_MAX 5
 #define HURT_TICKS 45
 
-#define ENEMY_DRAW 54                   // skeletons and ghosts
+#define ENEMY_DRAW 54                   // skeletons
+#define GHOST_DRAW 46                   // ghosts are a bit smaller
+#define GHOST_VIS  80                   // a ghost is visible for this many of each 100 ticks
+#define GHOST_PAD  6                    // extra reach on each side when hitting a ghost
 #define BOSS_DRAW  90
 #define BOSS_FALLEN_H 30                // the boss lies this tall once beaten
 #define BOSS_HP    12
@@ -77,8 +80,8 @@
 
 typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN } state_t;
 typedef enum { K_SKELETON, K_GHOST, K_BOSS } kind_t;
-typedef enum { W_CROSSBOW, W_DAGGER } weapon_t;
-typedef enum { PJ_DAGGER, PJ_BOLT, PJ_PEEL, PJ_POO, PJ_DART } proj_kind_t;
+typedef enum { W_CROSSBOW, W_SWORD } weapon_t;
+typedef enum { PJ_BOLT, PJ_PEEL, PJ_POO, PJ_DART } proj_kind_t;
 
 // A place to stand: the ground, or a ledge. `top` is the y of its surface.
 typedef struct {
@@ -100,7 +103,7 @@ typedef struct {
     kind_t kind;
     int x, y, sp, dir, hp, cool;
     int vx;    // horizontal pixels per tick, for leading shots
-    int vis_t, phase;  // ghosts: visible for 60 ticks, then hidden for 40
+    int vis_t, phase;  // ghosts: visible for GHOST_VIS ticks of each 100, then hidden
     int alive;
 } enemy_t;
 
@@ -129,7 +132,8 @@ static int hx, hy, vy, facing;   // Jimmy Bob: top-left, vertical speed, facing 
 static weapon_t weapon;
 static int bolt_cool;            // ticks until the crossbow can fire again
 static int attack_pending;       // MID was pressed and the attack has not fired yet
-static int dagger_cool;          // ticks until the dagger can be thrown again
+static int swing_t, swing_cool;  // sword: ticks left in the swing, ticks until the next swing
+static uint32_t swing_mask;      // enemies already hit by this swing
 
 static enemy_t enemies[MAX_ENEMY];
 static int n_enemies;
@@ -239,6 +243,111 @@ static void text_right(int xr, int y, const char *s, uint16_t c, int scale) {
 // ---- Sky and background ----------------------------------------------------
 
 // The full-screen jungle, dimmed so the characters stand out. Copied row by row.
+// ---- Sky -------------------------------------------------------------------
+// Black-sky levels: stars, a moon and two planets. Level 2: a sunny blue sky with a
+// sun, clouds and birds. All drawn in code.
+
+#define N_STARS 40
+#define COL_STAR_ON  RGB565(255, 255, 235)
+#define COL_STAR_OFF RGB565(70, 80, 110)
+#define COL_MOON     RGB565(240, 236, 210)
+#define COL_PLANET   RGB565(230, 140, 60)
+#define COL_RING     RGB565(250, 220, 150)
+#define COL_PLANET2  RGB565(80, 200, 190)
+#define COL_SUN      RGB565(255, 214, 40)
+#define COL_CLOUD    RGB565(255, 255, 255)
+#define COL_CLOUD_SH RGB565(205, 222, 238)
+#define COL_BIRD     RGB565(30, 30, 60)
+#define COL_SKY_TOP  RGB565(70, 150, 235)
+#define COL_SKY_LOW  RGB565(170, 220, 250)
+
+typedef struct {
+    int x, y, big, phase;
+} star_t;
+
+static star_t stars[N_STARS];
+
+// Fixed positions, so the stars never move between games.
+static void make_stars(void) {
+    uint32_t s = 2024;
+    for (int i = 0; i < N_STARS; i++) {
+        s = s * 1664525u + 1013904223u;
+        stars[i].x = (s >> 8) % GAME_W;
+        s = s * 1664525u + 1013904223u;
+        stars[i].y = HUD_BAND + 4 + (s >> 8) % (GROUND_Y - HUD_BAND - 80);
+        stars[i].big = (s >> 20) & 1;
+        stars[i].phase = (s >> 24) & 63;
+    }
+}
+
+// A ring round a planet: an ellipse band, drawn behind the planet's body.
+static void ring(int cx, int cy, int rx, int ry, int thick, uint16_t c) {
+    int y0 = imax(cy - ry, strip_y0), y1 = imin(cy + ry + 1, strip_y0 + strip_rows);
+    int x0 = imax(cx - rx, 0), x1 = imin(cx + rx + 1, GAME_W);
+    // Point inside the ellipse with semi-axes (a, b): dx^2 * b^2 + dy^2 * a^2 <= a^2 * b^2.
+    long a = rx, b = ry, ai = rx - thick, bi = ry - thick;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            long dx = x - cx, dy = y - cy;
+            int in_outer = dx * dx * b * b + dy * dy * a * a <= a * a * b * b;
+            int in_inner = dx * dx * bi * bi + dy * dy * ai * ai <= ai * ai * bi * bi;
+            if (in_outer && !in_inner) strip[(y - strip_y0) * GAME_W + x] = c;
+        }
+}
+
+static void night_sky(void) {
+    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK); // clear first, or last frame's pixels show through
+    for (int i = 0; i < N_STARS; i++) {
+        int lit = ((ticks + stars[i].phase) >> 3) % 5 != 0; // each star twinkles on its own phase
+        fill(stars[i].x, stars[i].y, stars[i].big ? 2 : 1, stars[i].big ? 2 : 1, lit ? COL_STAR_ON : COL_STAR_OFF);
+    }
+    // Moon: a cream disc with a black disc over part of it, so it reads as a crescent.
+    disc(440, 80, 18, COL_MOON);
+    disc(447, 74, 16, COL_BLACK);
+    // Two planets: a ringed orange one, and a small teal one.
+    ring(330, 118, 30, 8, 3, COL_RING);
+    disc(330, 118, 12, COL_PLANET);
+    disc(64, 150, 7, COL_PLANET2);
+}
+
+static void cloud(int cx, int cy) {
+    disc(cx + 18, cy + 12, 14, COL_CLOUD_SH);
+    disc(cx, cy, 14, COL_CLOUD);
+    disc(cx + 18, cy - 8, 18, COL_CLOUD);
+    disc(cx + 38, cy, 14, COL_CLOUD);
+    disc(cx + 18, cy + 6, 12, COL_CLOUD);
+}
+
+// A bird: two wings in a V that flap up and down.
+static void bird(int x, int y, int up) {
+    int dy = up ? -3 : 3;
+    line(x - 7, y + dy, x, y, COL_BIRD);
+    line(x, y, x + 7, y + dy, COL_BIRD);
+}
+
+static void day_sky(void) {
+    for (int y = strip_y0; y < strip_y0 + strip_rows; y++) {
+        int t = y * 256 / GROUND_Y;
+        uint16_t c = RGB565(70 + (170 - 70) * t / 256, 150 + (220 - 150) * t / 256, 235 + (250 - 235) * t / 256);
+        for (int x = 0; x < GAME_W; x++) strip[(y - strip_y0) * GAME_W + x] = c;
+    }
+    // Sun with a ring of rays.
+    disc(90, 100, 22, COL_SUN);
+    static const int ray[8][2] = {{34, 0}, {-34, 0}, {0, 34}, {0, -34}, {24, 24}, {-24, 24}, {24, -24}, {-24, -24}};
+    for (int i = 0; i < 8; i++) disc(90 + ray[i][0], 100 + ray[i][1], 3, COL_SUN);
+    // Clouds drift slowly to the right and wrap round.
+    static const int cloud_y[3] = {150, 118, 186};
+    static const int cloud_x[3] = {30, 210, 330};
+    for (int i = 0; i < 3; i++) cloud((cloud_x[i] + ticks / 3) % (GAME_W + 120) - 60, cloud_y[i]);
+    // Birds fly in from the right, flapping.
+    static const int bird_x[4] = {430, 470, 390, 300};
+    static const int bird_y[4] = {66, 92, 58, 80};
+    for (int i = 0; i < 4; i++) {
+        int x = (bird_x[i] - ticks / 4 + 2 * GAME_W) % (GAME_W + 40);
+        bird(x, bird_y[i], (ticks / 6 + i) & 1);
+    }
+}
+
 // A black sky with a stepped yellow pyramid, drawn in code. Its base sits on the ground.
 #define PYR_TOP  60
 #define PYR_TIER 39
@@ -249,7 +358,8 @@ static void text_right(int xr, int y, const char *s, uint16_t c, int scale) {
 #define COL_EARTH_JOINT RGB565(40, 24, 6)
 
 static void background(void) {
-    fill(0, strip_y0, GAME_W, strip_rows, COL_BLACK);
+    if (level == 2) day_sky();
+    else night_sky();
     for (int y = imax(strip_y0, PYR_TOP); y < imin(strip_y0 + strip_rows, GROUND_Y); y++) {
         int tier = (y - PYR_TOP) / PYR_TIER;              // 0 at the top, 5 at the base
         int half = 10 + tier * 22;                         // each step is wider
@@ -318,7 +428,8 @@ static void start_level(int n) {
     vy = 0;
     facing = 1;
     bolt_cool = 0;
-    dagger_cool = 0;
+    swing_t = 0;
+    swing_cool = 0;
     eagle_cool = 30;
     laser_t = 0;
     side_eagle = 0;
@@ -357,12 +468,13 @@ static void update_spawns(void) {
     if (on_screen >= spawn_at_once) return;
     kind_t k = spawn_queue[spawn_next++];
     if (k == K_SKELETON) add_enemy(K_SKELETON, GAME_W - 10, GROUND_Y - ENEMY_DRAW, spawn_sk_speed);
-    else if (k == K_GHOST) add_enemy(K_GHOST, GAME_W - 40, GROUND_Y - ENEMY_DRAW, spawn_gh_speed);
+    else if (k == K_GHOST) add_enemy(K_GHOST, GAME_W - 40, GROUND_Y - GHOST_DRAW, spawn_gh_speed);
     else add_enemy(K_BOSS, BOSS_X, BOSS_Y, 1);
     spawn_timer = 40;
 }
 
 void game_init(void) {
+    make_stars();
     state = ST_TITLE;
     level = 1;
     coins = 0;
@@ -398,8 +510,21 @@ static int alive_targets(void) {
     return n;
 }
 
+static void enemy_size(const enemy_t *e, int *w, int *h);
+
+// The box a shot or swing must touch: the sprite, with some extra reach for ghosts.
+static void enemy_hit_box(const enemy_t *e, int *x, int *y, int *w, int *h) {
+    int sw, sh;
+    enemy_size(e, &sw, &sh);
+    int pad = e->kind == K_GHOST ? GHOST_PAD : 0;
+    *x = e->x - pad;
+    *y = e->y - pad;
+    *w = sw + 2 * pad;
+    *h = sh + 2 * pad;
+}
+
 static void enemy_size(const enemy_t *e, int *w, int *h) {
-    int s = e->kind == K_BOSS ? BOSS_DRAW : ENEMY_DRAW;
+    int s = e->kind == K_BOSS ? BOSS_DRAW : e->kind == K_GHOST ? GHOST_DRAW : ENEMY_DRAW;
     *w = s;
     *h = s;
 }
@@ -408,7 +533,7 @@ static void enemy_size(const enemy_t *e, int *w, int *h) {
 static void damage_enemy(int i) {
     enemy_t *e = &enemies[i];
     if (!e->alive) return;
-    if (e->kind == K_GHOST && e->vis_t >= 60) return; // a hidden ghost cannot be hurt
+    if (e->kind == K_GHOST && e->vis_t >= GHOST_VIS) return; // a hidden ghost cannot be hurt
     e->hp--;
     if (e->hp > 0) return;
     e->alive = 0;
@@ -428,7 +553,7 @@ static int find_target(void) {
     for (int i = 0; i < n_enemies; i++) {
         enemy_t *e = &enemies[i];
         if (!e->alive) continue;
-        if (e->kind == K_GHOST && e->vis_t >= 60) continue;
+        if (e->kind == K_GHOST && e->vis_t >= GHOST_VIS) continue;
         int d = iabs(e->x - hx);
         if (d < bestd) { bestd = d; best = i; }
     }
@@ -486,7 +611,7 @@ static void update_enemies(void) {
             int fy = 60 + (t < 30 ? t : 60 - t) * 2;   // the height it floats at
             if (e->y < fy) e->y = imin(fy, e->y + 3);  // rises from the bottom first
             else if (e->y > fy) e->y = imax(fy, e->y - 3);
-            int visible = e->vis_t < 60;
+            int visible = e->vis_t < GHOST_VIS;
             if (visible && e->cool == 0 && overlap(hx, hy, HERO_DRAW, HERO_DRAW, e->x, e->y, w, h)) {
                 hit_hero();          // a ghost's touch
                 e->cool = 60;
@@ -525,13 +650,14 @@ static void update_projs(void) {
             }
             continue;
         }
-        // Friends' shots and the dagger hit the first enemy they reach.
+        // Friends' shots and the bolts hit the first enemy they reach.
         for (int k = 0; k < n_enemies; k++) {
             enemy_t *e = &enemies[k];
             if (!e->alive) continue;
             int w, h;
-            enemy_size(e, &w, &h);
-            if (px >= e->x && px < e->x + w && py >= e->y && py < e->y + h) {
+            int hx0, hy0;
+            enemy_hit_box(e, &hx0, &hy0, &w, &h);
+            if (px >= hx0 && px < hx0 + w && py >= hy0 && py < hy0 + h) {
                 p->on = 0;
                 damage_enemy(k);
                 break;
@@ -571,6 +697,23 @@ static void clamp_top(int *y, int *vy) {
     if (*y < HUD_BAND) {
         *y = HUD_BAND;
         *vy = 0;
+    }
+}
+
+// The samurai sword hits every enemy in the swing's box in front of Jimmy Bob, once per swing.
+static void sword_hits(void) {
+    int x0 = facing > 0 ? hx + HERO_DRAW - 6 : hx - 40;
+    for (int i = 0; i < n_enemies; i++) {
+        enemy_t *e = &enemies[i];
+        if (!e->alive || (swing_mask & (1u << i))) continue;
+        int w, h;
+        int bx, by;
+        enemy_hit_box(e, &bx, &by, &w, &h);
+        if (overlap(x0, hy + 8, 46, 48, bx, by, w, h)) {
+            swing_mask |= 1u << i;
+            damage_enemy(i);
+            if (state != ST_PLAY) return;
+        }
     }
 }
 
@@ -664,15 +807,26 @@ static void update_play(uint8_t held, uint8_t pressed) {
     // Jump, only from a surface.
     if ((pressed & JOY_UP) && vy == 0) vy = JUMP_V;
 
-    // SET switches between the crossbow and the dagger.
-    if (pressed & JOY_SET) weapon = weapon == W_CROSSBOW ? W_DAGGER : W_CROSSBOW;
+    // SET switches between the crossbow and the samurai sword.
+    if (pressed & JOY_SET) weapon = weapon == W_CROSSBOW ? W_SWORD : W_CROSSBOW;
 
-    // MID attacks with the weapon in hand, aimed at the nearest enemy. A press during a
-    // cooldown (or when there is no room) waits and fires as soon as it can.
+    // MID attacks with the weapon in hand. The crossbow fires at the nearest enemy (leading
+    // it); the sword swings in front of Jimmy Bob. A press during a cooldown waits.
     if (bolt_cool > 0) bolt_cool--;
-    if (dagger_cool > 0) dagger_cool--;
+    if (swing_cool > 0) swing_cool--;
+    if (swing_t > 0) {
+        swing_t--;
+        sword_hits();
+    }
     if (pressed & JOY_MID) attack_pending = 1;
-    if (attack_pending) {
+    if (attack_pending && weapon == W_SWORD && swing_cool == 0) {
+        swing_t = 12;
+        swing_cool = 16;
+        swing_mask = 0;
+        attack_pending = 0;
+        sword_hits();
+    }
+    if (attack_pending && weapon == W_CROSSBOW) {
         int sx = hx + HERO_DRAW - 8, sy = hy + 30;
         int tx = sx + facing * 400, ty = sy;
         int target = find_target();
@@ -685,14 +839,12 @@ static void update_play(uint8_t held, uint8_t pressed) {
             tx = e->x + w / 2 + e->vx * flight;
             ty = e->y + h / 2;
         }
-        if (weapon == W_CROSSBOW && bolt_cool == 0 && shoot(PJ_BOLT, sx, sy, tx, ty, BOLT_SPEED)) {
+        if (bolt_cool == 0 && shoot(PJ_BOLT, sx, sy, tx, ty, BOLT_SPEED)) {
             bolt_cool = 8;
-            attack_pending = 0;
-        } else if (weapon == W_DAGGER && dagger_cool == 0 && shoot(PJ_DAGGER, sx, sy + 4, tx, ty, 9)) {
-            dagger_cool = 8;
             attack_pending = 0;
         }
     }
+    if (state != ST_PLAY) return;
 
     if (hero_inv > 0) hero_inv--;
     update_hero_body();
@@ -793,7 +945,7 @@ static void draw_hud(void) {
     if (level < 4) snprintf(buf, sizeof buf, "LEVEL %d", level);
     else snprintf(buf, sizeof buf, "MEGA BOSS");
     text_centred(6, buf, COL_TEXT, 2);
-    text_centred(26, weapon == W_CROSSBOW ? "CROSSBOW" : "DAGGER", COL_DIM, 2);
+    text_centred(26, weapon == W_CROSSBOW ? "CROSSBOW" : "SWORD", COL_DIM, 2);
 }
 
 // The eagle, the banana and the devil, standing by Jimmy Bob's side.
@@ -823,8 +975,8 @@ static void draw_enemies(void) {
         if (e->kind == K_SKELETON) {
             spr(nj_skeleton, NJ_SKELETON_W, NJ_SKELETON_H, e->x, e->y, ENEMY_DRAW, ENEMY_DRAW, e->dir > 0);
         } else if (e->kind == K_GHOST) {
-            if (e->vis_t >= 60) continue; // hidden
-            spr(nj_ghost, NJ_GHOST_W, NJ_GHOST_H, e->x, e->y, ENEMY_DRAW, ENEMY_DRAW, 0);
+            if (e->vis_t >= GHOST_VIS) continue; // hidden
+            spr(nj_ghost, NJ_GHOST_W, NJ_GHOST_H, e->x, e->y, GHOST_DRAW, GHOST_DRAW, 0);
         } else {
             spr(nj_mega_boss, NJ_MEGA_BOSS_W, NJ_MEGA_BOSS_H, e->x, e->y, BOSS_DRAW, BOSS_DRAW, 0);
         }
@@ -838,10 +990,6 @@ static void draw_projs(void) {
         if (!p->on) continue;
         int px = p->x >> 4, py = p->y >> 4;
         switch (p->kind) {
-        case PJ_DAGGER:
-            fill(px - 6, py - 2, 12, 4, COL_DAGGER);
-            fill(px + (p->vx > 0 ? 4 : -8), py - 4, 4, 8, COL_GUARD);
-            break;
         case PJ_BOLT:
             spr(nj_fire_bolt, NJ_FIRE_BOLT_W, NJ_FIRE_BOLT_H, px - 20, py - 20, 40, 40, p->vx < 0);
             break;
@@ -865,16 +1013,14 @@ static void draw_laser(void) {
 
 static void draw_hero(void) {
     if (hero_inv && ((hero_inv >> 2) & 1)) return; // blink after a hit
-    spr(nj_jimmy_bob, NJ_JIMMY_BOB_W, NJ_JIMMY_BOB_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
-    // The weapon in his hand.
-    if (weapon == W_CROSSBOW) {
-        int wx = facing > 0 ? hx + HERO_DRAW - 14 : hx - 26;
-        spr(nj_crossbow, NJ_CROSSBOW_W, NJ_CROSSBOW_H, wx, hy + 28, 40, 40, facing < 0);
-    } else {
-        int dx = facing > 0 ? hx + HERO_DRAW - 6 : hx - 14;
-        fill(dx, hy + 42, 14, 4, COL_DAGGER);
-        fill(dx + (facing > 0 ? -2 : 12), hy + 39, 3, 10, COL_GUARD);
-    }
+    // Jimmy Bob with the weapon in hand; the other one is on his back in the same picture.
+    if (weapon == W_CROSSBOW)
+        spr(nj_jimmy_crossbow, NJ_JIMMY_CROSSBOW_W, NJ_JIMMY_CROSSBOW_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+    else
+        spr(nj_jimmy_sword, NJ_JIMMY_SWORD_W, NJ_JIMMY_SWORD_H, hx, hy, HERO_DRAW, HERO_DRAW, facing < 0);
+    // The crescent slash, in front of him while the sword swings.
+    if (weapon == W_SWORD && swing_t > 0)
+        spr(nj_slash, NJ_SLASH_W, NJ_SLASH_H, facing > 0 ? hx + HERO_DRAW - 6 : hx - 50, hy - 2, 56, 56, facing < 0);
 }
 
 void game_draw(uint16_t *buf, int y0, int rows) {
