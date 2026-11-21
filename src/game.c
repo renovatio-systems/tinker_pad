@@ -79,7 +79,7 @@
 
 // ---- Types -----------------------------------------------------------------
 
-typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN } state_t;
+typedef enum { ST_TITLE, ST_PLAY, ST_BANNER, ST_DEAD, ST_BOSS_DOWN, ST_WIN, ST_SHOP } state_t;
 typedef enum { K_SKELETON, K_GHOST, K_BOSS } kind_t;
 typedef enum { W_CROSSBOW, W_SWORD } weapon_t;
 typedef enum { PJ_BOLT, PJ_PEEL, PJ_POO, PJ_DART } proj_kind_t;
@@ -149,6 +149,15 @@ static int banner_timer, boss_timer;
 static int ticks;
 
 static uint32_t rng = 4242;
+
+// The armour shop. Nine items: eight cards, and the ultimate showcase (index 8).
+#define N_ARMOUR 9
+static const int armour_price[N_ARMOUR] = {0, 25, 50, 100, 200, 400, 800, 1600, 25600};
+static const int armour_def[N_ARMOUR] = {1, 2, 3, 5, 8, 10, 15, 25, 1800};   // blocks this % of hits, up to 50
+static const int armour_lives[N_ARMOUR] = {5, 5, 6, 7, 9, 10, 12, 15, 900};  // hit points
+static uint16_t owned_armour;     // bit i set: item i is bought
+static int equipped;              // the item being worn
+static int shop_cursor, shop_next, shop_from_title, shop_msg_t;
 
 // The strip being drawn right now. Everything is clipped to it.
 static uint16_t *strip;
@@ -599,7 +608,7 @@ static void start_level(int n) {
     spawn_next = 0;
     spawn_timer = 30;
     clear_projs();
-    hero_hp = HEARTS_MAX;
+    hero_hp = armour_lives[equipped];
     hero_inv = 0;
     hx = 40;
     hy = GROUND_Y - HERO_DRAW;
@@ -660,7 +669,7 @@ void game_init(void) {
     level = 1;
     coins = 0;
     weapon = W_CROSSBOW;
-    hero_hp = HEARTS_MAX;
+    hero_hp = armour_lives[equipped];
     hero_inv = 0;
     hx = 40;
     hy = GROUND_Y - HERO_DRAW;
@@ -670,12 +679,17 @@ void game_init(void) {
     clear_projs();
     banner_timer = 0;
     boss_timer = 0;
+    owned_armour = 1;   // the starter armour
+    equipped = 0;
+    shop_msg_t = 0;
 }
 
 // ---- Update ----------------------------------------------------------------
 
 static void hit_hero(void) {
     if (hero_inv > 0) return;
+    int block = imin(50, armour_def[equipped]);
+    if (rnd(100) < block) return;   // the armour takes this one
     hero_hp--;
     hero_inv = HURT_TICKS;
     if (hero_hp <= 0) {
@@ -1061,6 +1075,59 @@ static void update_boss_down(void) {
     }
 }
 
+// ---- Shop ------------------------------------------------------------------
+
+static void open_shop(int next, int from_title) {
+    shop_next = next;
+    shop_from_title = from_title;
+    shop_cursor = equipped;
+    shop_msg_t = 0;
+    state = ST_SHOP;
+}
+
+static void close_shop(void) {
+    if (shop_from_title) state = ST_TITLE;
+    else start_level(shop_next);
+}
+
+// Where each item's card is on the shop picture (480 x 320).
+static void shop_rect(int idx, int *x, int *y, int *w, int *h) {
+    if (idx == 8) { *x = 265; *y = 30; *w = 187; *h = 250; return; }
+    int col = idx % 4, row = idx / 4;
+    *x = 35 + 57 * col;
+    *y = row ? 170 : 72;
+    *w = 54;
+    *h = row ? 100 : 94;
+}
+
+static void shop_move(uint8_t pressed) {
+    int idx = shop_cursor, col = idx % 4, row = idx / 4;
+    if (idx == 8) {
+        if (pressed & JOY_LEFT) idx = 7;
+    } else {
+        if ((pressed & JOY_LEFT) && col > 0) idx--;
+        if ((pressed & JOY_RIGHT) && col == 3) idx = 8;
+        else if ((pressed & JOY_RIGHT)) idx++;
+        if ((pressed & JOY_UP) && row == 1) idx -= 4;
+        if ((pressed & JOY_DOWN) && row == 0) idx += 4;
+    }
+    shop_cursor = idx;
+}
+
+// Buys the item under the cursor, or wears it if it is already bought.
+static void shop_buy(void) {
+    int i = shop_cursor;
+    if (owned_armour & (1u << i)) {
+        equipped = i;
+    } else if (coins >= armour_price[i]) {
+        coins -= armour_price[i];
+        owned_armour |= (uint16_t)(1u << i);
+        equipped = i;
+    } else {
+        shop_msg_t = 60;
+    }
+}
+
 void game_update(uint8_t held, uint8_t pressed) {
     ticks++;
     if (pressed & JOY_RESET) {
@@ -1069,16 +1136,14 @@ void game_update(uint8_t held, uint8_t pressed) {
     }
     switch (state) {
     case ST_TITLE:
-        if (pressed & JOY_SET) {
-            coins = 0;
-            start_level(1);
-        }
+        if (pressed & JOY_SET) start_level(1);
+        if (pressed & JOY_MID) open_shop(1, 1);
         break;
     case ST_PLAY:
         update_play(held, pressed);
         break;
     case ST_BANNER:
-        if (--banner_timer <= 0) start_level(level + 1);
+        if (--banner_timer <= 0) open_shop(level + 1, 0);  // the shop opens after every level
         break;
     case ST_DEAD:
         if (pressed & JOY_SET) start_level(level); // try again, coins kept
@@ -1089,6 +1154,12 @@ void game_update(uint8_t held, uint8_t pressed) {
     case ST_WIN:
         if (pressed & JOY_SET) game_init();
         break;
+    case ST_SHOP:
+        shop_move(pressed);
+        if (shop_msg_t > 0) shop_msg_t--;
+        if (pressed & JOY_SET) shop_buy();
+        if (pressed & JOY_MID) close_shop();
+        break;
     }
 }
 
@@ -1097,7 +1168,8 @@ void game_update(uint8_t held, uint8_t pressed) {
 static void draw_title(void) {
     fill(0, 0, GAME_W, GAME_H, COL_BLACK);
     spr(nj_title_logo, NJ_TITLE_LOGO_W, NJ_TITLE_LOGO_H, 0, 0, 480, NJ_TITLE_LOGO_H, 0);
-    if ((ticks / 15) & 1) text_centred(252, "SET TO START", COL_GOLD, 3);
+    if ((ticks / 15) & 1) text_centred(240, "SET TO START", COL_GOLD, 3);
+    text_centred(264, "MID ARMOUR SHOP", COL_GOLD, 2);
     text_centred(282, "LEFT RIGHT WALK  UP JUMP", COL_TEXT, 2);
     text_centred(302, "MID ATTACK  SET WEAPON", COL_TEXT, 2);
 }
@@ -1115,9 +1187,15 @@ static void draw_win(void) {
 static void draw_hud(void) {
     char buf[32];
     fill(0, 0, GAME_W, HUD_BAND, COL_BAND);
-    for (int i = 0; i < HEARTS_MAX; i++) {
-        if (i < hero_hp) spr(nj_heart, NJ_HEART_W, NJ_HEART_H, 8 + i * 26, 10, 22, 22, 0);
-        else fill(8 + i * 26, 10, 22, 22, COL_HEAD_OFF);
+    int max_hp = armour_lives[equipped];
+    if (max_hp <= 10) {
+        for (int i = 0; i < max_hp; i++) {
+            if (i < hero_hp) spr(nj_heart, NJ_HEART_W, NJ_HEART_H, 8 + i * 26, 10, 22, 22, 0);
+            else fill(8 + i * 26, 10, 22, 22, COL_HEAD_OFF);
+        }
+    } else {
+        snprintf(buf, sizeof buf, "HP %d", hero_hp);
+        text(8, 12, buf, COL_TEXT, 2);
     }
     spr(nj_coin, NJ_COIN_W, NJ_COIN_H, 436, 9, 24, 24, 0);
     snprintf(buf, sizeof buf, "%d", coins);
@@ -1204,6 +1282,26 @@ static void draw_hero(void) {
         spr(nj_slash, NJ_SLASH_W, NJ_SLASH_H, facing > 0 ? hx + HERO_DRAW - 6 : hx - 50, hy - 2, 56, 56, facing < 0);
 }
 
+static void draw_shop(void) {
+    char buf[40];
+    spr(nj_shop_armour, NJ_SHOP_ARMOUR_W, NJ_SHOP_ARMOUR_H, 0, 0, 480, 320, 0);
+    int x, y, w, h;
+    shop_rect(equipped, &x, &y, &w, &h);
+    frame(x - 2, y - 2, w + 4, h + 4, 3, COL_GOLD);      // the armour being worn
+    shop_rect(shop_cursor, &x, &y, &w, &h);
+    frame(x - 5, y - 5, w + 10, h + 10, 2, COL_TEXT);    // the cursor
+    fill(0, 296, GAME_W, 24, COL_BLACK);
+    snprintf(buf, sizeof buf, "COINS %d", coins);
+    text(8, 300, buf, COL_GOLD, 2);
+    text_centred(300, "MID LEAVE", COL_DIM, 2);
+    if (shop_msg_t > 0) text_right(472, 300, "NOT ENOUGH COINS", COL_RED, 2);
+    else if (owned_armour & (1u << shop_cursor)) text_right(472, 300, "SET WEAR", COL_TEXT, 2);
+    else {
+        snprintf(buf, sizeof buf, "SET BUY %d", armour_price[shop_cursor]);
+        text_right(472, 300, buf, COL_TEXT, 2);
+    }
+}
+
 void game_draw(uint16_t *buf, int y0, int rows) {
     strip = buf;
     strip_y0 = y0;
@@ -1215,6 +1313,10 @@ void game_draw(uint16_t *buf, int y0, int rows) {
     }
     if (state == ST_WIN) {
         draw_win();
+        return;
+    }
+    if (state == ST_SHOP) {
+        draw_shop();
         return;
     }
 

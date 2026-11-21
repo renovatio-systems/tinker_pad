@@ -80,6 +80,10 @@ extern const uint16_t nj_jimmy_crossbow[NJ_JIMMY_CROSSBOW_W * NJ_JIMMY_CROSSBOW_
 #define NJ_SLASH_H 96
 extern const uint16_t nj_slash[NJ_SLASH_W * NJ_SLASH_H];
 
+#define NJ_SHOP_ARMOUR_W 480
+#define NJ_SHOP_ARMOUR_H 320
+extern const uint16_t nj_shop_armour[NJ_SHOP_ARMOUR_W * NJ_SHOP_ARMOUR_H];
+
 #define NJ_CROSSBOW_W 48
 #define NJ_CROSSBOW_H 48
 extern const uint16_t nj_crossbow[NJ_CROSSBOW_W * NJ_CROSSBOW_H];
